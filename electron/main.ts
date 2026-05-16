@@ -3633,6 +3633,7 @@ function registerIpcHandlers() {
     endTime?: number
     includeQuitMembers?: boolean
     minInviteCount?: number
+    rankingGroupId?: string
   }) => {
     return inviteStatsService.getDashboard(input)
   })

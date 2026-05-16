@@ -857,10 +857,13 @@ class InviteStatsService {
     tagId: string,
     startTime?: number,
     endTime?: number,
-    minInviteCount = 0
+    minInviteCount = 0,
+    groupId?: string
   ): InviteRankingRow[] {
+    const normalizedGroupId = normalizeText(groupId)
     const effective = this.filterByTime(this.getEffectiveInviteEvents(data, tagId), startTime, endTime)
       .filter((event) => {
+        if (normalizedGroupId && event.group_id !== normalizedGroupId) return false
         if (event.join_type === 'invite') return Boolean(event.inviter || event.inviter_wx_id)
         if (event.join_type === 'qrcode') return Boolean(event.inviter && event.inviter !== '未知来源')
         return false
@@ -1238,6 +1241,7 @@ class InviteStatsService {
     endTime?: number
     includeQuitMembers?: boolean
     minInviteCount?: number
+    rankingGroupId?: string
   }): Promise<{ success: boolean; data?: any; error?: string }> {
     try {
       const data = this.getScope()
@@ -1252,7 +1256,6 @@ class InviteStatsService {
       const effective = this.getEffectiveInviteEvents(data, tagId)
       const scopedInviteEvents = data.inviteEvents.filter((event) => event.activity_tag_id === tagId)
       const scopedQuitEvents = data.quitEvents.filter((event) => event.activity_tag_id === tagId)
-      const rangedEffective = this.filterByTime(effective, input.startTime, input.endTime)
       const pendingCount = scopedInviteEvents.filter((event) => event.status === 'pending').length +
         scopedQuitEvents.filter((event) => event.status === 'pending').length
 
@@ -1277,7 +1280,7 @@ class InviteStatsService {
 
       const hourlyBuckets: Record<number, number> = {}
       for (let hour = 0; hour < 24; hour += 1) hourlyBuckets[hour] = 0
-      for (const event of rangedEffective) {
+      for (const event of effective) {
         const hour = new Date(event.invite_time * 1000).getHours()
         hourlyBuckets[hour] = (hourlyBuckets[hour] || 0) + 1
       }
@@ -1313,7 +1316,7 @@ class InviteStatsService {
             pendingCount
           },
           hourlyDistribution,
-          inviteRanking: this.buildInviteRanking(data, tagId, input.startTime, input.endTime, Math.max(0, Number(input.minInviteCount || 0))),
+          inviteRanking: this.buildInviteRanking(data, tagId, input.startTime, input.endTime, Math.max(0, Number(input.minInviteCount || 0)), input.rankingGroupId),
           groupRanking,
           recentActivities,
           scanStatus: {
@@ -1512,10 +1515,11 @@ class InviteStatsService {
     startTime?: number
     endTime?: number
     minInviteCount?: number
+    groupId?: string
   }): Promise<{ success: boolean; count?: number; error?: string }> {
     try {
       const data = this.getScope()
-      const rows = this.buildInviteRanking(data, payload.tagId, payload.startTime, payload.endTime, payload.minInviteCount)
+      const rows = this.buildInviteRanking(data, payload.tagId, payload.startTime, payload.endTime, payload.minInviteCount, payload.groupId)
       const headers = ['排名', '活动标签', '邀请人', '邀请人 wxid', '邀请人数', '关联群数量', '最近邀请时间']
       const tagName = data.activityTags.find((tag) => tag.tag_id === payload.tagId)?.tag_name || ''
       const body = rows.map((row) => [

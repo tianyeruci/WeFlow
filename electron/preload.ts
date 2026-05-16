@@ -450,6 +450,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       endTime?: number
       includeQuitMembers?: boolean
       minInviteCount?: number
+      rankingGroupId?: string
     }) => ipcRenderer.invoke('inviteStats:getDashboard', input),
     getMemberTrace: (filters: any) => ipcRenderer.invoke('inviteStats:getMemberTrace', filters),
     listPending: (filters?: { tagId?: string }) => ipcRenderer.invoke('inviteStats:listPending', filters),

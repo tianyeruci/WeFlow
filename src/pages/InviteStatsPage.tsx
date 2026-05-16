@@ -6,7 +6,6 @@ import {
   Clock,
   Download,
   FileSpreadsheet,
-  Filter,
   Loader2,
   PieChart,
   RefreshCw,
@@ -16,7 +15,6 @@ import {
   Users,
   X
 } from 'lucide-react'
-import DateRangePicker from '../components/DateRangePicker'
 import type {
   InviteActivityTag,
   InviteDashboardData,
@@ -54,20 +52,10 @@ const toDateInput = (date: Date): string => {
   return `${year}-${month}-${day}`
 }
 
-const getInitialStartDate = (): string => {
-  const date = new Date()
-  date.setDate(date.getDate() - 7)
-  return toDateInput(date)
-}
-
-const dateStartSeconds = (date: string): number | undefined => {
+const dateTimeSeconds = (date: string): number | undefined => {
   if (!date) return undefined
-  return Math.floor(new Date(`${date}T00:00:00`).getTime() / 1000)
-}
-
-const dateEndSeconds = (date: string): number | undefined => {
-  if (!date) return undefined
-  return Math.floor(new Date(`${date}T23:59:59`).getTime() / 1000)
+  const time = new Date(date).getTime()
+  return Number.isNaN(time) ? undefined : Math.floor(time / 1000)
 }
 
 const formatNumber = (value?: number): string => {
@@ -121,11 +109,13 @@ function InviteStatsPage() {
   const [tags, setTags] = useState<InviteActivityTag[]>([])
   const [groups, setGroups] = useState<InviteStatsGroupRow[]>([])
   const [selectedTagId, setSelectedTagId] = useState('')
-  const [startDate, setStartDate] = useState(getInitialStartDate())
-  const [endDate, setEndDate] = useState(toDateInput(new Date()))
   const [includeQuitMembers, setIncludeQuitMembers] = useState(false)
-  const [minInviteCount, setMinInviteCount] = useState(1)
   const [chartMode, setChartMode] = useState<ChartMode>('bar')
+  const [rankingGroupId, setRankingGroupId] = useState('')
+  const [rankingStartDateTime, setRankingStartDateTime] = useState('')
+  const [rankingEndDateTime, setRankingEndDateTime] = useState('')
+  const [traceStartDateTime, setTraceStartDateTime] = useState('')
+  const [traceEndDateTime, setTraceEndDateTime] = useState('')
   const [newTagName, setNewTagName] = useState('')
   const [groupSearch, setGroupSearch] = useState('')
   const [groupSort, setGroupSort] = useState<GroupSortKey>('member_count')
@@ -139,7 +129,6 @@ function InviteStatsPage() {
   const [isDashboardLoading, setIsDashboardLoading] = useState(false)
   const [traceFilters, setTraceFilters] = useState<InviteMemberTraceFilters>({
     includeQuit: true,
-    exact: false,
     limit: 200
   })
   const [toast, setToast] = useState('')
@@ -149,8 +138,10 @@ function InviteStatsPage() {
     [tags, selectedTagId]
   )
 
-  const tagStartTime = useMemo(() => dateStartSeconds(startDate), [startDate])
-  const tagEndTime = useMemo(() => dateEndSeconds(endDate), [endDate])
+  const rankingStartTime = useMemo(() => dateTimeSeconds(rankingStartDateTime), [rankingStartDateTime])
+  const rankingEndTime = useMemo(() => dateTimeSeconds(rankingEndDateTime), [rankingEndDateTime])
+  const traceStartTime = useMemo(() => dateTimeSeconds(traceStartDateTime), [traceStartDateTime])
+  const traceEndTime = useMemo(() => dateTimeSeconds(traceEndDateTime), [traceEndDateTime])
 
   const showToast = useCallback((message: string) => {
     setToast(message)
@@ -195,10 +186,10 @@ function InviteStatsPage() {
     try {
       const result = await window.electronAPI.inviteStats.getDashboard({
         tagId: selectedTagId,
-        startTime: tagStartTime,
-        endTime: tagEndTime,
+        startTime: rankingStartTime,
+        endTime: rankingEndTime,
         includeQuitMembers,
-        minInviteCount
+        rankingGroupId: rankingGroupId || undefined
       })
       if (result.success) {
         setDashboard(result.data || null)
@@ -212,7 +203,7 @@ function InviteStatsPage() {
     } finally {
       setIsDashboardLoading(false)
     }
-  }, [includeQuitMembers, minInviteCount, selectedTagId, showToast, tagEndTime, tagStartTime])
+  }, [includeQuitMembers, rankingEndTime, rankingGroupId, rankingStartTime, selectedTagId, showToast])
 
   const loadTrace = useCallback(async () => {
     if (!selectedTagId) {
@@ -223,8 +214,8 @@ function InviteStatsPage() {
     const result = await window.electronAPI.inviteStats.getMemberTrace({
       ...traceFilters,
       tagId: selectedTagId,
-      startTime: tagStartTime,
-      endTime: tagEndTime
+      startTime: traceStartTime,
+      endTime: traceEndTime
     })
     if (result.success) {
       setTraceRows(result.data?.rows || [])
@@ -232,7 +223,7 @@ function InviteStatsPage() {
     } else {
       showToast(result.error || '成员溯源读取失败')
     }
-  }, [selectedTagId, showToast, tagEndTime, tagStartTime, traceFilters])
+  }, [selectedTagId, showToast, traceEndTime, traceFilters, traceStartTime])
 
   const loadPending = useCallback(async () => {
     const result = await window.electronAPI.inviteStats.listPending({ tagId: selectedTagId || undefined })
@@ -285,15 +276,6 @@ function InviteStatsPage() {
     setNewTagName('')
     showToast('活动已创建')
     await refreshMeta(result.data.tag_id)
-  }
-
-  const toggleActivityTag = async (tag: InviteActivityTag) => {
-    const result = await window.electronAPI.inviteStats.setActivityTagEnabled(tag.tag_id, !tag.enabled)
-    if (!result.success) {
-      showToast(result.error || '活动状态更新失败')
-      return
-    }
-    await refreshMeta(tag.tag_id)
   }
 
   const scanSelectedTag = async (mode: ScanMode = 'incremental') => {
@@ -349,9 +331,9 @@ function InviteStatsPage() {
       filePath,
       format: inferExportFormat(filePath),
       tagId: selectedTagId,
-      startTime: tagStartTime,
-      endTime: tagEndTime,
-      minInviteCount
+      startTime: rankingStartTime,
+      endTime: rankingEndTime,
+      groupId: rankingGroupId || undefined
     })
     showToast(result.success ? `已导出 ${result.count || 0} 条排行榜` : (result.error || '导出失败'))
   }
@@ -365,8 +347,8 @@ function InviteStatsPage() {
       filePath,
       format: inferExportFormat(filePath),
       tagId: selectedTagId,
-      startTime: tagStartTime,
-      endTime: tagEndTime
+      startTime: traceStartTime,
+      endTime: traceEndTime
     })
     showToast(result.success ? `已导出 ${result.count || 0} 条明细` : (result.error || '导出失败'))
   }
@@ -448,6 +430,14 @@ function InviteStatsPage() {
     () => groups.filter((group) => group.tag_id === selectedTagId && group.binding_enabled),
     [groups, selectedTagId]
   )
+
+  useEffect(() => {
+    const tagGroupIds = new Set(tagGroups.map((group) => group.group_id))
+    if (rankingGroupId && !tagGroupIds.has(rankingGroupId)) setRankingGroupId('')
+    if (traceFilters.groupId && !tagGroupIds.has(traceFilters.groupId)) {
+      setTraceFilters((prev) => ({ ...prev, groupId: undefined }))
+    }
+  }, [rankingGroupId, tagGroups, traceFilters.groupId])
 
   const hourlyOption = useMemo(() => {
     const rows = dashboard?.hourlyDistribution || []
@@ -564,22 +554,19 @@ function InviteStatsPage() {
         <section className="invite-toolbar">
           <div className="invite-field activity">
             <label>活动标签</label>
-            <select value={selectedTagId} onChange={(event) => setSelectedTagId(event.target.value)}>
+            <select
+              value={selectedTagId}
+              onChange={(event) => {
+                setSelectedTagId(event.target.value)
+                setRankingGroupId('')
+                setTraceFilters((prev) => ({ ...prev, groupId: undefined }))
+              }}
+            >
               <option value="">请选择活动标签</option>
               {tags.map((tag) => (
                 <option key={tag.tag_id} value={tag.tag_id}>{tag.tag_name}</option>
               ))}
             </select>
-          </div>
-          <div className="invite-field range">
-            <label>统计时间</label>
-            <DateRangePicker
-              startDate={startDate}
-              endDate={endDate}
-              onStartDateChange={setStartDate}
-              onEndDateChange={setEndDate}
-              onRangeComplete={() => void loadDashboard()}
-            />
           </div>
           <div className="invite-scan-actions">
             <button className="invite-primary-btn" onClick={() => void scanSelectedTag('incremental')} disabled={!selectedTagId || isScanning}>
@@ -601,45 +588,6 @@ function InviteStatsPage() {
               placeholder="新活动标签"
             />
             <button onClick={createActivityTag} disabled={!newTagName.trim()}>创建</button>
-          </div>
-        </section>
-
-        <section className="invite-notice">
-          <span>当前展示：{selectedTag?.tag_name || '未选择活动'}。统计时间只影响展示和导出，不限制扫描范围。</span>
-          <span>增量扫描按当前活动标签 + group_id 查找各群最后 invite_time；无历史记录则读取该群全部可读取系统消息。</span>
-          <span>全局扫描会清空当前活动标签相关原始记录、扫描日志和人工绑定后重扫该标签下所有群。</span>
-        </section>
-
-        <section className="invite-filter-row">
-          <label className="invite-check">
-            <input
-              type="checkbox"
-              checked={includeQuitMembers}
-              onChange={(event) => setIncludeQuitMembers(event.target.checked)}
-            />
-            <span>总成员含退群</span>
-          </label>
-          <label className="invite-number-filter">
-            <span>最少邀请</span>
-            <input
-              type="number"
-              min={1}
-              value={minInviteCount}
-              onChange={(event) => setMinInviteCount(Math.max(1, Number(event.target.value) || 1))}
-            />
-          </label>
-          <div className="invite-tag-strip">
-            {tags.map((tag) => (
-              <button
-                key={tag.tag_id}
-                className={`${selectedTagId === tag.tag_id ? 'active' : ''} ${tag.enabled ? '' : 'disabled'}`}
-                onClick={() => setSelectedTagId(tag.tag_id)}
-                onDoubleClick={() => void toggleActivityTag(tag)}
-                title="双击启用或停用"
-              >
-                {tag.tag_name}
-              </button>
-            ))}
           </div>
           <div className="invite-last-scan">{latestScanText}</div>
         </section>
@@ -665,7 +613,18 @@ function InviteStatsPage() {
             </article>
             <article className="invite-metric-card amber">
               <div className="invite-metric-icon"><Users size={24} /></div>
-              <div><strong>{formatNumber(cards?.totalMembers || 0)}</strong><span>{includeQuitMembers ? '总成员数含退群' : '总成员数仅在群'}</span></div>
+              <div>
+                <strong>{formatNumber(cards?.totalMembers || 0)}</strong>
+                <span>{includeQuitMembers ? '总成员数含退群' : '总成员数仅在群'}</span>
+              </div>
+              <label className="invite-metric-toggle">
+                <input
+                  type="checkbox"
+                  checked={includeQuitMembers}
+                  onChange={(event) => setIncludeQuitMembers(event.target.checked)}
+                />
+                <span>含退群</span>
+              </label>
             </article>
             <article className="invite-metric-card violet">
               <div className="invite-metric-icon"><BarChart3 size={24} /></div>
@@ -683,7 +642,7 @@ function InviteStatsPage() {
                 <div className="invite-panel-title">
                   <div>
                     <h2>进群时段分布</h2>
-                    <p>按当前统计时间内有效入群记录统计</p>
+                    <p>按当前活动标签全部有效入群记录统计</p>
                   </div>
                   {isDashboardLoading && <Loader2 size={16} className="spin" />}
                 </div>
@@ -733,16 +692,28 @@ function InviteStatsPage() {
                 </div>
               </div>
               <div className="invite-ranking-tools">
-                <select value="" disabled>
+                <select value={rankingGroupId} onChange={(event) => setRankingGroupId(event.target.value)}>
                   <option value="">当前活动下全部群</option>
+                  {tagGroups.map((group) => (
+                    <option key={group.group_id} value={group.group_id}>{group.group_name}</option>
+                  ))}
                 </select>
-                <label>
-                  <span>最少邀请人数</span>
+                <label className="invite-datetime-field">
+                  <span>开始时间</span>
                   <input
-                    type="number"
-                    min={1}
-                    value={minInviteCount}
-                    onChange={(event) => setMinInviteCount(Math.max(1, Number(event.target.value) || 1))}
+                    type="datetime-local"
+                    step={1}
+                    value={rankingStartDateTime}
+                    onChange={(event) => setRankingStartDateTime(event.target.value)}
+                  />
+                </label>
+                <label className="invite-datetime-field">
+                  <span>结束时间</span>
+                  <input
+                    type="datetime-local"
+                    step={1}
+                    value={rankingEndDateTime}
+                    onChange={(event) => setRankingEndDateTime(event.target.value)}
                   />
                 </label>
               </div>
@@ -870,21 +841,23 @@ function InviteStatsPage() {
                   placeholder="成员昵称"
                 />
               </div>
-              <div className="invite-search compact">
-                <Filter size={15} />
+              <label className="invite-datetime-field">
+                <span>开始时间</span>
                 <input
-                  value={traceFilters.wxId || ''}
-                  onChange={(event) => setTraceFilters((prev) => ({ ...prev, wxId: event.target.value }))}
-                  placeholder="wxid"
+                  type="datetime-local"
+                  step={1}
+                  value={traceStartDateTime}
+                  onChange={(event) => setTraceStartDateTime(event.target.value)}
                 />
-              </div>
-              <label className="invite-check">
+              </label>
+              <label className="invite-datetime-field">
+                <span>结束时间</span>
                 <input
-                  type="checkbox"
-                  checked={Boolean(traceFilters.exact)}
-                  onChange={(event) => setTraceFilters((prev) => ({ ...prev, exact: event.target.checked }))}
+                  type="datetime-local"
+                  step={1}
+                  value={traceEndDateTime}
+                  onChange={(event) => setTraceEndDateTime(event.target.value)}
                 />
-                <span>精确</span>
               </label>
               <label className="invite-check">
                 <input
