@@ -83,7 +83,7 @@
   top: 0;
   z-index: 20;
   display: grid;
-  grid-template-columns: 300px 1fr 96px;
+  grid-template-columns: 300px 1fr;
   align-items: stretch;
   gap: 18px;
   min-width: 1280px;
@@ -194,26 +194,6 @@
   }
 }
 
-.invite-topbar-state {
-  align-self: center;
-  justify-self: end;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 64px;
-  height: 32px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.09);
-  color: rgba(255, 255, 255, 0.76);
-  font-size: 12px;
-  font-weight: 900;
-
-  &.running {
-    color: #c5fff0;
-    background: rgba(25, 183, 155, 0.22);
-  }
-}
-
 .invite-screen {
   min-width: 1280px;
   padding: 22px 26px 28px;
@@ -221,7 +201,7 @@
 
 .invite-toolbar {
   display: grid;
-  grid-template-columns: 320px 260px 300px minmax(180px, 1fr);
+  grid-template-columns: minmax(280px, 420px) 280px minmax(300px, 1fr);
   gap: 12px;
   align-items: end;
   margin-bottom: 14px;
@@ -302,15 +282,6 @@
     padding: 0;
     accent-color: var(--invite-teal);
   }
-}
-
-.invite-last-scan {
-  align-self: center;
-  justify-self: end;
-  color: var(--invite-muted);
-  font-size: 12px;
-  font-weight: 800;
-  white-space: nowrap;
 }
 
 .invite-metrics {
@@ -462,7 +433,7 @@
 
 .invite-ranking-tools {
   display: grid;
-  grid-template-columns: minmax(190px, 1fr) minmax(200px, 240px) minmax(200px, 240px);
+  grid-template-columns: minmax(190px, 1fr) minmax(420px, 520px);
   gap: 10px;
   margin-bottom: 12px;
   padding: 10px;
@@ -477,9 +448,9 @@
   }
 }
 
-.invite-datetime-field {
+.invite-datetime-range {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   min-height: 36px;
@@ -499,6 +470,11 @@
     background: transparent;
     box-shadow: none;
     font-size: 12px;
+  }
+
+  span {
+    color: var(--invite-muted);
+    font-weight: 900;
   }
 }
 
@@ -698,6 +674,10 @@
 
   select {
     max-width: 180px;
+  }
+
+  .invite-datetime-range {
+    min-width: 380px;
   }
 }
 

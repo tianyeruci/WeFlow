@@ -282,6 +282,8 @@ export interface InviteMemberTraceFilters {
   startTime?: number
   endTime?: number
   exact?: boolean
+  statusFilter?: 'active' | 'quit' | 'pending'
+  attributionFilter?: 'valid' | 'invalid' | 'pending'
   includeQuit?: boolean
   offset?: number
   limit?: number

@@ -191,6 +191,8 @@ interface MemberTraceFilters {
   startTime?: number
   endTime?: number
   exact?: boolean
+  statusFilter?: 'active' | 'quit' | 'pending'
+  attributionFilter?: 'valid' | 'invalid' | 'pending'
   includeQuit?: boolean
   limit?: number
   offset?: number
@@ -1336,6 +1338,8 @@ class InviteStatsService {
     const groupId = normalizeText(filters.groupId)
     const keyword = normalizeText(filters.keyword).toLowerCase()
     const wxId = this.cleanAccountDirName(normalizeText(filters.wxId))
+    const statusFilter = normalizeText(filters.statusFilter)
+    const attributionFilter = normalizeText(filters.attributionFilter)
     const invitedCountMap = tagId ? this.getInvitedCountByInviter(data, tagId) : new Map<string, number>()
     const rows: MemberTraceRow[] = []
 
@@ -1402,6 +1406,12 @@ class InviteStatsService {
         if (wxId && this.cleanAccountDirName(row.wx_id) !== wxId) return false
         if (filters.startTime && row.event_time < filters.startTime) return false
         if (filters.endTime && row.event_time > filters.endTime) return false
+        if (statusFilter === 'active' && row.delete_flag !== -1) return false
+        if (statusFilter === 'quit' && row.delete_flag !== 1) return false
+        if (statusFilter === 'pending' && row.status !== 'pending') return false
+        if (attributionFilter === 'valid' && row.valid_flag !== 1) return false
+        if (attributionFilter === 'invalid' && row.valid_flag !== -1) return false
+        if (attributionFilter === 'pending' && row.status !== 'pending') return false
         if (keyword) {
           const fields = [row.user, row.wx_id, row.inviter, row.inviter_wx_id, row.group_name, row.group_id]
             .join('\n')

@@ -45,6 +45,20 @@ const groupSortOptions: Array<{ value: GroupSortKey; label: string }> = [
   { value: 'last_scan_time', label: '最近扫描' }
 ]
 
+const traceStatusOptions = [
+  { value: '', label: '全部状态' },
+  { value: 'active', label: '未退出' },
+  { value: 'quit', label: '退出' },
+  { value: 'pending', label: '待确认' }
+]
+
+const traceAttributionOptions = [
+  { value: '', label: '全部归因' },
+  { value: 'valid', label: '有效' },
+  { value: 'invalid', label: '无效' },
+  { value: 'pending', label: '待确认' }
+]
+
 const toDateInput = (date: Date): string => {
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, '0')
@@ -545,9 +559,6 @@ function InviteStatsPage() {
             )
           })}
         </nav>
-        <div className={isScanning ? 'invite-topbar-state running' : 'invite-topbar-state'}>
-          <span>{isScanning ? '扫描中' : '空闲'}</span>
-        </div>
       </header>
 
       <main className="invite-screen">
@@ -589,7 +600,6 @@ function InviteStatsPage() {
             />
             <button onClick={createActivityTag} disabled={!newTagName.trim()}>创建</button>
           </div>
-          <div className="invite-last-scan">{latestScanText}</div>
         </section>
 
       {!selectedTagId && (
@@ -698,24 +708,23 @@ function InviteStatsPage() {
                     <option key={group.group_id} value={group.group_id}>{group.group_name}</option>
                   ))}
                 </select>
-                <label className="invite-datetime-field">
-                  <span>开始时间</span>
+                <div className="invite-datetime-range" aria-label="排行榜时间范围">
                   <input
                     type="datetime-local"
                     step={1}
+                    aria-label="排行榜开始时间"
                     value={rankingStartDateTime}
                     onChange={(event) => setRankingStartDateTime(event.target.value)}
                   />
-                </label>
-                <label className="invite-datetime-field">
-                  <span>结束时间</span>
+                  <span aria-hidden="true">-</span>
                   <input
                     type="datetime-local"
                     step={1}
+                    aria-label="排行榜结束时间"
                     value={rankingEndDateTime}
                     onChange={(event) => setRankingEndDateTime(event.target.value)}
                   />
-                </label>
+                </div>
               </div>
               <ReactECharts option={rankingOption} style={{ height: 390 }} />
             </section>
@@ -841,24 +850,43 @@ function InviteStatsPage() {
                   placeholder="成员昵称"
                 />
               </div>
-              <label className="invite-datetime-field">
-                <span>开始时间</span>
+              <div className="invite-datetime-range" aria-label="群成员溯源时间范围">
                 <input
                   type="datetime-local"
                   step={1}
+                  aria-label="群成员溯源开始时间"
                   value={traceStartDateTime}
                   onChange={(event) => setTraceStartDateTime(event.target.value)}
                 />
-              </label>
-              <label className="invite-datetime-field">
-                <span>结束时间</span>
+                <span aria-hidden="true">-</span>
                 <input
                   type="datetime-local"
                   step={1}
+                  aria-label="群成员溯源结束时间"
                   value={traceEndDateTime}
                   onChange={(event) => setTraceEndDateTime(event.target.value)}
                 />
-              </label>
+              </div>
+              <select
+                value={traceFilters.statusFilter || ''}
+                onChange={(event) => setTraceFilters((prev) => ({
+                  ...prev,
+                  statusFilter: (event.target.value || undefined) as InviteMemberTraceFilters['statusFilter']
+                }))}
+                aria-label="成员状态筛选"
+              >
+                {traceStatusOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+              <select
+                value={traceFilters.attributionFilter || ''}
+                onChange={(event) => setTraceFilters((prev) => ({
+                  ...prev,
+                  attributionFilter: (event.target.value || undefined) as InviteMemberTraceFilters['attributionFilter']
+                }))}
+                aria-label="归因筛选"
+              >
+                {traceAttributionOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
               <label className="invite-check">
                 <input
                   type="checkbox"
