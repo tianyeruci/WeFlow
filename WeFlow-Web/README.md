@@ -10,15 +10,15 @@
 
 ## 环境变量
 
-复制 `.env.example` 为 `.env.local`：
+Vercel 生产环境需要配置：
 
 ```bash
-SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_URL=https://dmbgthvxmnozitczusxj.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
-REMOTE_VIEWER_TOKEN=change-this-viewer-token
+REMOTE_SYNC_TOKEN=change-this-sync-token
 ```
 
-浏览器端不会拿到 `SUPABASE_SERVICE_ROLE_KEY`。普通用户需要输入 `REMOTE_VIEWER_TOKEN`，页面会把它作为 Bearer Token 调用只读 API。
+浏览器端不会拿到 `SUPABASE_SERVICE_ROLE_KEY`。普通用户只读页面不再需要访问口令；任何知道页面地址的人都可以查看远程统计结果。`REMOTE_SYNC_TOKEN` 只给本地同步程序使用，不要给普通用户。
 
 ## Supabase 数据要求
 
@@ -61,4 +61,4 @@ npm run build
 
 没有配置 Supabase 环境变量时，构建不会失败；运行时 API 会返回清晰配置错误。
 
-构建脚本固定使用 `next build --webpack`，用于避开部分 Windows 环境下 Turbopack 写入 `.next` 临时文件时的权限问题；Vercel 也可以直接使用该脚本。
+构建脚本固定使用 `next build --webpack`，用于避开部分 Windows 环境中 Turbopack 写入 `.next` 临时文件时的权限问题；Vercel 也可以直接使用该脚本。

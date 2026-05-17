@@ -1,14 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 
 export function requireViewerToken(request: NextRequest): NextResponse | null {
-  return requireToken(request, 'REMOTE_VIEWER_TOKEN')
+  void request
+  return null
 }
 
 export function requireSyncToken(request: NextRequest): NextResponse | null {
   return requireToken(request, 'REMOTE_SYNC_TOKEN')
 }
 
-function requireToken(request: NextRequest, envName: 'REMOTE_VIEWER_TOKEN' | 'REMOTE_SYNC_TOKEN') {
+function requireToken(request: NextRequest, envName: 'REMOTE_SYNC_TOKEN') {
   const expectedToken = process.env[envName]
   if (!expectedToken) {
     return NextResponse.json(

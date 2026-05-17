@@ -30,8 +30,6 @@ const emptyTrace: MemberTraceData = {
 
 export default function RemoteViewerPage() {
   const [view, setView] = useState<ViewKey>('dashboard')
-  const [token, setToken] = useState('')
-  const [tokenInput, setTokenInput] = useState('')
   const [tags, setTags] = useState<ActivityTag[]>([])
   const [selectedTagId, setSelectedTagId] = useState('')
   const [dashboard, setDashboard] = useState<DashboardData>(emptyDashboard)
@@ -52,12 +50,6 @@ export default function RemoteViewerPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  useEffect(() => {
-    const storedToken = window.localStorage.getItem('weflow.remote.viewer.token') || ''
-    setToken(storedToken)
-    setTokenInput(storedToken)
-  }, [])
-
   const selectedTag = useMemo(
     () => tags.find(tag => tag.id === selectedTagId),
     [tags, selectedTagId]
@@ -65,9 +57,6 @@ export default function RemoteViewerPage() {
 
   const apiGet = useCallback(async <T,>(path: string) => {
     const response = await fetch(path, {
-      headers: {
-        Authorization: `Bearer ${token}`
-      },
       cache: 'no-store'
     })
     const payload = await response.json().catch(() => ({}))
@@ -75,10 +64,9 @@ export default function RemoteViewerPage() {
       throw new Error(payload.error || '远程数据暂不可用')
     }
     return payload as T
-  }, [token])
+  }, [])
 
   const loadTags = useCallback(async () => {
-    if (!token) return
     setLoading(true)
     setError('')
     try {
@@ -90,10 +78,10 @@ export default function RemoteViewerPage() {
     } finally {
       setLoading(false)
     }
-  }, [apiGet, token])
+  }, [apiGet])
 
   const loadDashboard = useCallback(async () => {
-    if (!token || !selectedTagId) return
+    if (!selectedTagId) return
     const params = new URLSearchParams({ tagId: selectedTagId })
     if (rankingGroupId) params.set('rankingGroupId', rankingGroupId)
     if (rankingStart) params.set('rankingStart', rankingStart)
@@ -110,10 +98,10 @@ export default function RemoteViewerPage() {
     } finally {
       setLoading(false)
     }
-  }, [apiGet, rankingEnd, rankingGroupId, rankingStart, selectedTagId, token])
+  }, [apiGet, rankingEnd, rankingGroupId, rankingStart, selectedTagId])
 
   const loadTrace = useCallback(async () => {
-    if (!token || !selectedTagId) return
+    if (!selectedTagId) return
     const params = new URLSearchParams({ tagId: selectedTagId })
     if (traceGroupId) params.set('groupId', traceGroupId)
     if (traceKeyword.trim()) params.set('keyword', traceKeyword.trim())
@@ -134,7 +122,7 @@ export default function RemoteViewerPage() {
     } finally {
       setLoading(false)
     }
-  }, [apiGet, selectedTagId, token, traceAttribution, traceEnd, traceGroupId, traceIncludeQuit, traceKeyword, traceStart, traceStatus])
+  }, [apiGet, selectedTagId, traceAttribution, traceEnd, traceGroupId, traceIncludeQuit, traceKeyword, traceStart, traceStatus])
 
   useEffect(() => {
     void loadTags()
@@ -148,14 +136,8 @@ export default function RemoteViewerPage() {
     if (view === 'trace') void loadTrace()
   }, [loadTrace, view])
 
-  function saveToken() {
-    const nextToken = tokenInput.trim()
-    window.localStorage.setItem('weflow.remote.viewer.token', nextToken)
-    setToken(nextToken)
-  }
-
   async function exportCsv(type: 'ranking' | 'trace') {
-    if (!token || !selectedTagId) return
+    if (!selectedTagId) return
     const params = new URLSearchParams({ tagId: selectedTagId })
     let endpoint = '/api/invite/export/ranking'
 
@@ -174,11 +156,9 @@ export default function RemoteViewerPage() {
       params.set('includeQuit', String(traceIncludeQuit))
     }
 
-    const response = await fetch(`${endpoint}?${params}`, {
-      headers: { Authorization: `Bearer ${token}` }
-    })
+    const response = await fetch(`${endpoint}?${params}`)
     if (!response.ok) {
-      setError('导出失败，请检查访问令牌和远程数据配置')
+      setError('导出失败，请检查远程数据配置')
       return
     }
     const blob = await response.blob()
@@ -209,24 +189,6 @@ export default function RemoteViewerPage() {
       </header>
 
       <main className="screen">
-        {!token && (
-          <section className="access-panel">
-            <h1>输入访问令牌</h1>
-            <p>普通用户远程页面只调用只读接口，令牌由管理员在部署环境中配置。</p>
-            <div>
-              <input
-                type="password"
-                value={tokenInput}
-                placeholder="REMOTE_VIEWER_TOKEN"
-                onChange={event => setTokenInput(event.target.value)}
-              />
-              <button onClick={saveToken}>进入</button>
-            </div>
-          </section>
-        )}
-
-        {token && (
-          <>
             <section className="toolbar" aria-label="远程用户筛选区">
               <label className="field">
                 <span>活动标签</span>
@@ -234,15 +196,6 @@ export default function RemoteViewerPage() {
                   {tags.map(tag => <option key={tag.id} value={tag.id}>{tag.name}</option>)}
                 </select>
               </label>
-              <div className="token-tools">
-                <input
-                  type="password"
-                  value={tokenInput}
-                  aria-label="访问令牌"
-                  onChange={event => setTokenInput(event.target.value)}
-                />
-                <button onClick={saveToken}>更新令牌</button>
-              </div>
             </section>
 
             {error && <div className="error-banner">{error}</div>}
@@ -429,8 +382,6 @@ export default function RemoteViewerPage() {
                 </section>
               </section>
             )}
-          </>
-        )}
       </main>
 
       {rawMessage && (

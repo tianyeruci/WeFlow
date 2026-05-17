@@ -211,45 +211,6 @@ textarea:focus {
   min-height: 42px;
 }
 
-.token-tools {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-}
-
-.token-tools input {
-  width: 220px;
-}
-
-.access-panel {
-  max-width: 560px;
-  margin: 90px auto 0;
-  padding: 28px;
-  border: 1px solid rgba(231, 233, 240, 0.95);
-  border-radius: var(--radius);
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: var(--shadow);
-}
-
-.access-panel h1 {
-  margin: 0;
-  font-size: 24px;
-  font-weight: 950;
-}
-
-.access-panel p {
-  margin: 10px 0 18px;
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.access-panel div {
-  display: grid;
-  grid-template-columns: 1fr 90px;
-  gap: 10px;
-}
-
 .error-banner,
 .loading-line {
   margin-bottom: 14px;
