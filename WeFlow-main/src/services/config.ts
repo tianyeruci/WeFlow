@@ -74,6 +74,8 @@ export const CONFIG_KEYS = {
   HTTP_API_ENABLED: 'httpApiEnabled',
   HTTP_API_PORT: 'httpApiPort',
   HTTP_API_HOST: 'httpApiHost',
+  INVITE_REMOTE_SYNC_URL: 'inviteRemoteSyncUrl',
+  INVITE_REMOTE_SYNC_TOKEN: 'inviteRemoteSyncToken',
   MESSAGE_PUSH_ENABLED: 'messagePushEnabled',
   MESSAGE_PUSH_FILTER_MODE: 'messagePushFilterMode',
   MESSAGE_PUSH_FILTER_LIST: 'messagePushFilterList',
@@ -1863,6 +1865,24 @@ export async function setHttpApiHost(host: string): Promise<void> {
   await config.set(CONFIG_KEYS.HTTP_API_HOST, host)
 }
 
+export async function getInviteRemoteSyncUrl(): Promise<string> {
+  const value = await config.get(CONFIG_KEYS.INVITE_REMOTE_SYNC_URL)
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+export async function setInviteRemoteSyncUrl(url: string): Promise<void> {
+  await config.set(CONFIG_KEYS.INVITE_REMOTE_SYNC_URL, String(url || '').trim())
+}
+
+export async function getInviteRemoteSyncToken(): Promise<string> {
+  const value = await config.get(CONFIG_KEYS.INVITE_REMOTE_SYNC_TOKEN)
+  return typeof value === 'string' ? value : ''
+}
+
+export async function setInviteRemoteSyncToken(token: string): Promise<void> {
+  await config.set(CONFIG_KEYS.INVITE_REMOTE_SYNC_TOKEN, String(token || '').trim())
+}
+
 // ─── AI 见解 ──────────────────────────────────────────────────────────────────
 
 export async function getAiModelApiBaseUrl(): Promise<string> {
@@ -2202,4 +2222,3 @@ export async function setAutoDownloadWhitelist(list: string[]): Promise<void> {
   const normalized = Array.from(new Set((list || []).map(item => String(item || '').trim()).filter(Boolean)))
   await config.set(CONFIG_KEYS.AUTO_DOWNLOAD_WHITELIST, normalized)
 }
-

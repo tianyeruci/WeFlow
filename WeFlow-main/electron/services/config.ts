@@ -82,6 +82,8 @@ interface ConfigSchema {
   httpApiEnabled: boolean
   httpApiPort: number
   httpApiHost: string
+  inviteRemoteSyncUrl: string
+  inviteRemoteSyncToken: string
   httpApiToken: string
   windowCloseBehavior: 'ask' | 'tray' | 'quit'
   quoteLayout: 'quote-top' | 'quote-bottom'
@@ -141,6 +143,7 @@ const ENCRYPTED_STRING_KEYS: Set<string> = new Set([
   'imageAesKey',
   'authPassword',
   'httpApiToken',
+  'inviteRemoteSyncToken',
   'aiModelApiKey',
   'aiInsightApiKey',
   'aiInsightWeiboCookie'
@@ -214,6 +217,8 @@ export class ConfigService {
       httpApiEnabled: false,
       httpApiPort: 5031,
       httpApiHost: '127.0.0.1',
+      inviteRemoteSyncUrl: '',
+      inviteRemoteSyncToken: '',
       messagePushEnabled: false,
       messagePushFilterMode: 'all',
       messagePushFilterList: [],
@@ -981,4 +986,3 @@ export class ConfigService {
     this.unlockPassword = null
   }
 }
-

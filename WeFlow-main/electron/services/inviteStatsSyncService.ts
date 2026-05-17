@@ -1,4 +1,5 @@
 import { inviteStatsService, type InviteRemoteSyncPayload } from './inviteStatsService'
+import { ConfigService } from './config'
 
 export interface InviteStatsRemoteSyncOptions {
   endpoint?: string
@@ -13,6 +14,7 @@ export interface InviteStatsRemoteSyncResult {
 }
 
 class InviteStatsSyncService {
+  private readonly configService = ConfigService.getInstance()
   private syncPromise: Promise<InviteStatsRemoteSyncResult> | null = null
   private autoSyncTimer: ReturnType<typeof setInterval> | null = null
   private readonly autoSyncIntervalMs = 5 * 60 * 1000
@@ -91,11 +93,21 @@ class InviteStatsSyncService {
   }
 
   private resolveEndpoint(input?: string) {
-    return String(input || process.env.WEFLOW_INVITE_SYNC_URL || '').trim()
+    return String(
+      input ||
+      this.configService.get('inviteRemoteSyncUrl') ||
+      process.env.WEFLOW_INVITE_SYNC_URL ||
+      ''
+    ).trim()
   }
 
   private resolveToken(input?: string) {
-    return String(input || process.env.WEFLOW_INVITE_SYNC_TOKEN || '').trim()
+    return String(
+      input ||
+      this.configService.get('inviteRemoteSyncToken') ||
+      process.env.WEFLOW_INVITE_SYNC_TOKEN ||
+      ''
+    ).trim()
   }
 
   private async readResponse(response: Response) {

@@ -11,6 +11,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Settings,
   Sparkles,
   Tags,
   Trash2,
@@ -25,6 +26,7 @@ import type {
   InviteScanLog,
   InviteStatsGroupRow
 } from '../types/electron'
+import * as configService from '../services/config'
 import './InviteStatsPage.scss'
 
 type ViewKey = 'dashboard' | 'groups' | 'trace' | 'pending'
@@ -222,6 +224,11 @@ function InviteStatsPage() {
   const [createTagDialogOpen, setCreateTagDialogOpen] = useState(false)
   const [createTagName, setCreateTagName] = useState('')
   const [isCreatingTag, setIsCreatingTag] = useState(false)
+  const [remoteSyncDialogOpen, setRemoteSyncDialogOpen] = useState(false)
+  const [remoteSyncUrl, setRemoteSyncUrl] = useState('')
+  const [remoteSyncToken, setRemoteSyncToken] = useState('')
+  const [isSavingRemoteSync, setIsSavingRemoteSync] = useState(false)
+  const [isRemoteSyncing, setIsRemoteSyncing] = useState(false)
   const [traceFilters, setTraceFilters] = useState<InviteMemberTraceFilters>({
     includeQuit: true,
     limit: 200
@@ -242,6 +249,53 @@ function InviteStatsPage() {
     setToast(message)
     window.setTimeout(() => setToast(''), 2800)
   }, [])
+
+  const openRemoteSyncSettings = useCallback(async () => {
+    const [url, token] = await Promise.all([
+      configService.getInviteRemoteSyncUrl(),
+      configService.getInviteRemoteSyncToken()
+    ])
+    setRemoteSyncUrl(url)
+    setRemoteSyncToken(token)
+    setRemoteSyncDialogOpen(true)
+  }, [])
+
+  const saveRemoteSyncSettings = async () => {
+    setIsSavingRemoteSync(true)
+    try {
+      await Promise.all([
+        configService.setInviteRemoteSyncUrl(remoteSyncUrl),
+        configService.setInviteRemoteSyncToken(remoteSyncToken)
+      ])
+      showToast('远程同步设置已保存')
+      setRemoteSyncDialogOpen(false)
+    } finally {
+      setIsSavingRemoteSync(false)
+    }
+  }
+
+  const syncRemoteNow = async () => {
+    setIsRemoteSyncing(true)
+    try {
+      await Promise.all([
+        configService.setInviteRemoteSyncUrl(remoteSyncUrl),
+        configService.setInviteRemoteSyncToken(remoteSyncToken)
+      ])
+      const result = await window.electronAPI.inviteStats.syncRemote({
+        endpoint: remoteSyncUrl.trim(),
+        token: remoteSyncToken.trim()
+      })
+      if (!result.success) {
+        showToast(result.error || '远程同步失败')
+        return
+      }
+      const total = Object.values(result.counts || {}).reduce((sum, count) => sum + Number(count || 0), 0)
+      showToast(total > 0 ? `远程同步完成：${total} 条变更` : '远程同步完成，暂无新变更')
+      setRemoteSyncDialogOpen(false)
+    } finally {
+      setIsRemoteSyncing(false)
+    }
+  }
 
   const refreshMeta = useCallback(async (preferredTagId?: string) => {
     setIsLoading(true)
@@ -665,6 +719,15 @@ function InviteStatsPage() {
             )
           })}
         </nav>
+        <button
+          type="button"
+          className="invite-sync-settings-btn"
+          onClick={() => void openRemoteSyncSettings()}
+          title="远程同步设置"
+          aria-label="远程同步设置"
+        >
+          <Settings size={17} />
+        </button>
       </header>
 
       <main className="invite-screen">

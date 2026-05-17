@@ -4295,6 +4295,7 @@ app.whenReady().then(async () => {
   inviteStatsService.setAfterScanSuccessCallback(() => inviteStatsSyncService.queueSync())
   inviteStatsService.startAutoScanScheduler()
   inviteStatsSyncService.startAutoSyncScheduler()
+  void inviteStatsSyncService.queueSync()
   await delay(200)
 
   // 已完成引导时，在 Splash 阶段预热核心数据（联系人、消息库索引等）
