@@ -15,6 +15,7 @@ import { imagePreloadService } from './services/imagePreloadService'
 import { analyticsService } from './services/analyticsService'
 import { groupAnalyticsService } from './services/groupAnalyticsService'
 import { inviteStatsService } from './services/inviteStatsService'
+import { inviteStatsSyncService } from './services/inviteStatsSyncService'
 import { annualReportService } from './services/annualReportService'
 import { exportService, ExportOptions, ExportProgress } from './services/exportService'
 import { exportTaskControlService } from './services/exportTaskControlService'
@@ -3617,14 +3618,11 @@ function registerIpcHandlers() {
     return inviteStatsService.clearGroupTag(groupId)
   })
 
-  ipcMain.handle('inviteStats:scanActivity', async (_, tagIdOrPayload: string | { tagId?: string; mode?: string }, mode?: string) => {
+  ipcMain.handle('inviteStats:scanActivity', async (_, tagIdOrPayload: string | { tagId?: string }) => {
     const tagId = typeof tagIdOrPayload === 'object'
       ? String(tagIdOrPayload?.tagId || '')
       : String(tagIdOrPayload || '')
-    const scanMode = typeof tagIdOrPayload === 'object'
-      ? tagIdOrPayload?.mode
-      : mode
-    return inviteStatsService.scanActivity(tagId, scanMode)
+    return inviteStatsService.scanActivity(tagId)
   })
 
   ipcMain.handle('inviteStats:getScanStatus', async () => {
@@ -3674,6 +3672,9 @@ function registerIpcHandlers() {
 
   ipcMain.handle('inviteStats:exportRawEvents', async (_, payload: any) => {
     return inviteStatsService.exportRawEvents(payload)
+  })
+  ipcMain.handle('inviteStats:syncRemote', async (_, options?: { endpoint?: string; token?: string }) => {
+    return inviteStatsSyncService.queueSync(options)
   })
 
   // 打开协议窗口
@@ -4291,7 +4292,9 @@ app.whenReady().then(async () => {
   })
   messagePushService.start()
   insightService.start()
+  inviteStatsService.setAfterScanSuccessCallback(() => inviteStatsSyncService.queueSync())
   inviteStatsService.startAutoScanScheduler()
+  inviteStatsSyncService.startAutoSyncScheduler()
   await delay(200)
 
   // 已完成引导时，在 Splash 阶段预热核心数据（联系人、消息库索引等）

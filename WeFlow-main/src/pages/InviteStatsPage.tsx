@@ -29,7 +29,6 @@ import './InviteStatsPage.scss'
 
 type ViewKey = 'dashboard' | 'groups' | 'trace' | 'pending'
 type ChartMode = 'bar' | 'pie'
-type ScanMode = 'incremental' | 'full'
 type GroupSortKey = 'member_count' | 'today_join_count' | 'today_quit_count' | 'last_scan_time' | 'recent_invite_time'
 
 const viewItems: Array<{ key: ViewKey; label: string; icon: typeof BarChart3 }> = [
@@ -131,6 +130,71 @@ const inferExportFormat = (filePath: string): 'csv' | 'xlsx' => {
 }
 
 const fileNameDate = (): string => toDateInput(new Date()).replace(/-/g, '')
+
+const formatCompactDateTime = (value: string): string => {
+  if (!value) return ''
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/.exec(value)
+  if (!match) return ''
+  return `${match[2]}-${match[3]} ${match[4]}:${match[5]}:${match[6] || '00'}`
+}
+
+function CompactDateTimeRange(props: {
+  start: string
+  end: string
+  onStartChange: (value: string) => void
+  onEndChange: (value: string) => void
+  ariaLabel: string
+}) {
+  const [open, setOpen] = useState(false)
+  const display = props.start || props.end
+    ? `${formatCompactDateTime(props.start) || '开始'} - ${formatCompactDateTime(props.end) || '结束'}`
+    : '选择时间段'
+
+  return (
+    <div className="invite-compact-range">
+      <button
+        type="button"
+        className={props.start || props.end ? 'has-value' : ''}
+        onClick={() => setOpen((value) => !value)}
+        aria-label={props.ariaLabel}
+      >
+        <Clock size={14} />
+        <span>{display}</span>
+      </button>
+      {open && (
+        <div className="invite-compact-range-popover">
+          <input
+            type="datetime-local"
+            step={1}
+            value={props.start}
+            onChange={(event) => props.onStartChange(event.target.value)}
+            aria-label={`${props.ariaLabel} start`}
+          />
+          <span aria-hidden="true">-</span>
+          <input
+            type="datetime-local"
+            step={1}
+            value={props.end}
+            onChange={(event) => props.onEndChange(event.target.value)}
+            aria-label={`${props.ariaLabel} end`}
+          />
+          {(props.start || props.end) && (
+            <button
+              type="button"
+              className="invite-compact-range-clear"
+              onClick={() => {
+                props.onStartChange('')
+                props.onEndChange('')
+              }}
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
 
 function InviteStatsPage() {
   const [activeView, setActiveView] = useState<ViewKey>('dashboard')
@@ -338,19 +402,14 @@ function InviteStatsPage() {
     await refreshMeta()
   }
 
-  const scanSelectedTag = async (mode: ScanMode = 'incremental') => {
+  const scanSelectedTag = async () => {
     if (!selectedTagId || isScanning) return
-    if (mode === 'full') {
-      const confirmed = window.confirm(`全局扫描会清空「${selectedTag?.tag_name || '当前活动'}」相关的原始记录、扫描日志和人工绑定，然后重新扫描该活动下所有群。确定继续吗？`)
-      if (!confirmed) return
-    }
     setIsScanning(true)
-    const result = await window.electronAPI.inviteStats.scanActivity(selectedTagId, mode)
+    const result = await window.electronAPI.inviteStats.scanActivity(selectedTagId)
     if (!result.success) {
       showToast(result.error || '扫描失败')
     } else {
-      const label = mode === 'full' ? '全局扫描' : '增量扫描'
-      showToast(`${label}完成：新增 ${result.log?.new_invites || 0} 条入群，${result.log?.new_quits || 0} 条退群`)
+      showToast(`增量扫描完成：新增 ${result.log?.new_invites || 0} 条入群，${result.log?.new_quits || 0} 条退群`)
     }
     await refreshMeta(selectedTagId)
     await loadDashboard()
@@ -569,7 +628,7 @@ function InviteStatsPage() {
 
   const cards = dashboard?.cards
   const latestLog = scanLogs[0]
-  const latestScanModeLabel = latestLog?.scan_mode === 'full' ? '全局扫描' : '增量扫描'
+  const latestScanModeLabel = '增量扫描'
   const latestScanText = latestLog
     ? `${latestScanModeLabel} · ${formatShortTime(latestLog.finished_at || latestLog.started_at)} · ${statusLabel(latestLog.status)}`
     : '尚未扫描'
@@ -634,13 +693,9 @@ function InviteStatsPage() {
             </div>
           </div>
           <div className="invite-scan-actions">
-            <button className="invite-primary-btn" onClick={() => void scanSelectedTag('incremental')} disabled={!selectedTagId || isScanning}>
+            <button className="invite-primary-btn" onClick={() => void scanSelectedTag()} disabled={!selectedTagId || isScanning}>
               {isScanning ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}
               <span>{isScanning ? '扫描中' : '增量扫描'}</span>
-            </button>
-            <button className="invite-danger-btn" onClick={() => void scanSelectedTag('full')} disabled={!selectedTagId || isScanning}>
-              <RefreshCw size={16} />
-              <span>全局扫描</span>
             </button>
           </div>
           {canManageTags && (
@@ -691,7 +746,7 @@ function InviteStatsPage() {
             </article>
             <article className="invite-metric-card red">
               <div className="invite-metric-icon"><Check size={24} /></div>
-              <div><strong>{formatNumber(cards?.pendingCount || 0)}</strong><span>待确认记录</span></div>
+              <div><strong>{formatNumber(cards?.todayQuitMembers || 0)}</strong><span>今日退群</span></div>
             </article>
           </section>
 
@@ -757,23 +812,13 @@ function InviteStatsPage() {
                     <option key={group.group_id} value={group.group_id}>{group.group_name}</option>
                   ))}
                 </select>
-                <div className="invite-datetime-range" aria-label="排行榜时间范围">
-                  <input
-                    type="datetime-local"
-                    step={1}
-                    aria-label="排行榜开始时间"
-                    value={rankingStartDateTime}
-                    onChange={(event) => setRankingStartDateTime(event.target.value)}
-                  />
-                  <span aria-hidden="true">-</span>
-                  <input
-                    type="datetime-local"
-                    step={1}
-                    aria-label="排行榜结束时间"
-                    value={rankingEndDateTime}
-                    onChange={(event) => setRankingEndDateTime(event.target.value)}
-                  />
-                </div>
+                <CompactDateTimeRange
+                  start={rankingStartDateTime}
+                  end={rankingEndDateTime}
+                  onStartChange={setRankingStartDateTime}
+                  onEndChange={setRankingEndDateTime}
+                  ariaLabel="ranking time range"
+                />
               </div>
               <ReactECharts option={rankingOption} style={{ height: 390 }} />
             </section>
@@ -899,23 +944,13 @@ function InviteStatsPage() {
                   placeholder="成员昵称"
                 />
               </div>
-              <div className="invite-datetime-range" aria-label="群成员溯源时间范围">
-                <input
-                  type="datetime-local"
-                  step={1}
-                  aria-label="群成员溯源开始时间"
-                  value={traceStartDateTime}
-                  onChange={(event) => setTraceStartDateTime(event.target.value)}
-                />
-                <span aria-hidden="true">-</span>
-                <input
-                  type="datetime-local"
-                  step={1}
-                  aria-label="群成员溯源结束时间"
-                  value={traceEndDateTime}
-                  onChange={(event) => setTraceEndDateTime(event.target.value)}
-                />
-              </div>
+              <CompactDateTimeRange
+                start={traceStartDateTime}
+                end={traceEndDateTime}
+                onStartChange={setTraceStartDateTime}
+                onEndChange={setTraceEndDateTime}
+                ariaLabel="member trace time range"
+              />
               <select
                 value={traceFilters.statusFilter || ''}
                 onChange={(event) => setTraceFilters((prev) => ({

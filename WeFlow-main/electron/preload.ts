@@ -443,7 +443,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     listGroups: () => ipcRenderer.invoke('inviteStats:listGroups'),
     setGroupTag: (groupId: string, tagId: string) => ipcRenderer.invoke('inviteStats:setGroupTag', groupId, tagId),
     clearGroupTag: (groupId: string) => ipcRenderer.invoke('inviteStats:clearGroupTag', groupId),
-    scanActivity: (tagId: string, mode?: 'incremental' | 'full') => ipcRenderer.invoke('inviteStats:scanActivity', tagId, mode),
+    scanActivity: (tagId: string) => ipcRenderer.invoke('inviteStats:scanActivity', tagId),
     getScanStatus: () => ipcRenderer.invoke('inviteStats:getScanStatus'),
     getDashboard: (input: {
       tagId: string
@@ -466,7 +466,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('inviteStats:ignorePending', payload),
     exportInviteRanking: (payload: any) => ipcRenderer.invoke('inviteStats:exportInviteRanking', payload),
     exportMemberTrace: (payload: any) => ipcRenderer.invoke('inviteStats:exportMemberTrace', payload),
-    exportRawEvents: (payload: any) => ipcRenderer.invoke('inviteStats:exportRawEvents', payload)
+    exportRawEvents: (payload: any) => ipcRenderer.invoke('inviteStats:exportRawEvents', payload),
+    syncRemote: (options?: { endpoint?: string; token?: string }) => ipcRenderer.invoke('inviteStats:syncRemote', options)
   },
 
   // 年度报告

@@ -142,7 +142,7 @@
     .screen { width: 100%; padding: clamp(14px, 1.7vw, 22px) clamp(14px, 1.8vw, 26px) 28px; }
     .toolbar {
       display: grid;
-      grid-template-columns: minmax(280px, 390px) minmax(0, 1fr) auto;
+      grid-template-columns: minmax(280px, 390px) minmax(0, 1fr);
       gap: 14px;
       align-items: end;
       margin-bottom: 18px;
@@ -156,9 +156,6 @@
 
     .field { display: grid; gap: 6px; min-width: 0; }
     .field label { color: var(--muted); font-size: 12px; font-weight: 900; }
-    .tag-control { display: grid; grid-template-columns: minmax(0, 1fr) 38px; gap: 8px; }
-    .tag-control button { padding: 0; background: #f8f9fc; color: var(--muted); }
-    .toolbar-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-width: 0; }
     .remote-meta { display: flex; justify-content: flex-end; gap: 10px; align-items: center; color: var(--muted); font-size: 12px; font-weight: 900; white-space: nowrap; }
     .primary-btn { border-color: transparent; background: linear-gradient(135deg, var(--blue), var(--violet)); color: #fff; }
     .primary-btn:hover { border-color: transparent; background: linear-gradient(135deg, #2f70df, #6f4fdc); }
@@ -451,7 +448,6 @@
 
       .toolbar,
       .dashboard-main,
-      .toolbar-actions,
       .remote-meta {
         justify-content: flex-start;
       }
@@ -487,7 +483,6 @@
       .brand strong { font-size: 18px; }
       .brand span { font-size: 11px; }
       .toolbar { padding: 14px; }
-      .toolbar-actions { display: grid; grid-template-columns: 1fr; }
       .remote-meta { align-items: flex-start; flex-direction: column; }
       .metrics { grid-template-columns: 1fr; }
       .metric-card { min-height: 112px; padding: 18px; }
@@ -537,17 +532,11 @@
       <section class="toolbar">
         <div class="field">
           <label>活动标签</label>
-          <div class="tag-control">
-            <select id="tagSelect">
-              <option value="pull" selected>拉新</option>
-              <option value="auto">自动</option>
-              <option value="sale">发售</option>
-            </select>
-            <button type="button" title="删除活动标签"><i data-lucide="trash-2" class="icon"></i></button>
-          </div>
-        </div>
-        <div class="toolbar-actions">
-          <button><i data-lucide="plus" class="icon"></i>新活动标签</button>
+          <select id="tagSelect">
+            <option value="pull" selected>拉新</option>
+            <option value="auto">自动</option>
+            <option value="sale">发售</option>
+          </select>
         </div>
         <div class="remote-meta">
           <span>最近同步：05/17 09:42</span>

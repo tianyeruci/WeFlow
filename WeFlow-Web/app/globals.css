@@ -23,7 +23,8 @@
 html,
 body {
   margin: 0;
-  min-width: var(--frame);
+  min-width: 0;
+  overflow-x: hidden;
   color: var(--ink);
   background:
     linear-gradient(90deg, rgba(55, 120, 229, 0.06) 1px, transparent 1px),
@@ -84,8 +85,8 @@ textarea:focus {
 }
 
 .app-shell {
-  width: var(--frame);
-  min-width: var(--frame);
+  width: min(100%, var(--frame));
+  min-width: 0;
   margin: 0 auto;
 }
 
@@ -737,10 +738,13 @@ textarea:focus {
 
 .table-wrap {
   position: relative;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 table {
   width: 100%;
+  min-width: 880px;
   border-collapse: collapse;
   overflow: hidden;
   border: 1px solid var(--line);
@@ -869,4 +873,340 @@ tr:last-child td {
   text-align: center;
   font-size: 13px;
   font-weight: 900;
+}
+
+@media (max-width: 1320px) {
+  .topbar {
+    grid-template-columns: minmax(230px, 300px) 1fr;
+  }
+
+  .metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .dashboard-main {
+    grid-template-columns: minmax(280px, 0.9fr) minmax(420px, 1.25fr);
+  }
+
+  .dashboard-main > .panel:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .activity-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 22px;
+  }
+
+  .trace-head {
+    grid-template-columns: 1fr 180px 220px 280px;
+  }
+}
+
+@media (max-width: 980px) {
+  .topbar {
+    position: static;
+    grid-template-columns: 1fr;
+    height: auto;
+    padding: 14px 18px 0;
+  }
+
+  .brand {
+    min-height: 48px;
+    justify-content: flex-start;
+  }
+
+  .screen-nav {
+    justify-content: flex-start;
+    gap: 0;
+    margin: 10px -18px 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .screen-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .screen-nav button {
+    flex: 1 0 160px;
+    min-width: 160px;
+    height: 52px;
+    font-size: 15px;
+  }
+
+  .screen {
+    padding: 16px;
+  }
+
+  .toolbar {
+    grid-template-columns: 1fr;
+    padding: 14px;
+  }
+
+  .metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .metric-card {
+    min-height: 100px;
+    padding: 16px;
+  }
+
+  .dashboard-main {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-main > .panel:last-child {
+    grid-column: auto;
+  }
+
+  .ranking-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .datetime-range {
+    grid-template-columns: 1fr;
+  }
+
+  .bar-chart {
+    padding: 14px 18px 22px;
+  }
+
+  .bar-row {
+    grid-template-columns: 108px 1fr 38px;
+  }
+
+  .trace-head {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .trace-title {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 640px) {
+  body {
+    background-size: 18px 18px, auto;
+  }
+
+  button,
+  input,
+  select {
+    min-height: 42px;
+  }
+
+  .topbar {
+    padding: 12px 12px 0;
+  }
+
+  .brand strong {
+    font-size: 20px;
+  }
+
+  .brand span {
+    font-size: 11px;
+  }
+
+  .screen-nav {
+    margin-right: -12px;
+    margin-left: -12px;
+  }
+
+  .screen-nav button {
+    flex-basis: 138px;
+    min-width: 138px;
+    padding: 0 12px;
+    font-size: 14px;
+  }
+
+  .screen {
+    padding: 12px;
+  }
+
+  .toolbar,
+  .panel,
+  .metric-card {
+    border-radius: 8px;
+  }
+
+  .metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .metric-card {
+    grid-template-columns: 48px 1fr;
+    gap: 14px;
+  }
+
+  .metric-icon {
+    width: 48px;
+    height: 48px;
+  }
+
+  .metric-value {
+    font-size: 26px;
+  }
+
+  .panel-title {
+    padding: 16px 14px 8px;
+  }
+
+  .panel-title h2,
+  .trace-title h2 {
+    font-size: 18px;
+  }
+
+  .panel-title {
+    flex-direction: column;
+  }
+
+  .panel-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .chart-line {
+    height: 220px;
+    margin: 4px 14px 16px;
+  }
+
+  .group-rank {
+    padding: 8px 14px 16px;
+  }
+
+  .group-row {
+    grid-template-columns: 32px minmax(0, 1fr) 54px;
+    gap: 10px;
+  }
+
+  .ranking-panel {
+    min-height: 0;
+  }
+
+  .ranking-toolbar {
+    margin: 8px 14px 14px;
+  }
+
+  .bar-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    padding-bottom: 6px;
+  }
+
+  .bar-label {
+    text-align: left;
+  }
+
+  .bar-value {
+    height: 12px;
+  }
+
+  .bar-number {
+    justify-self: end;
+    margin-top: -20px;
+  }
+
+  .activity-list {
+    grid-template-columns: 1fr;
+    padding: 2px 14px 16px;
+  }
+
+  .activity-item {
+    grid-template-columns: 38px minmax(0, 1fr);
+  }
+
+  .activity-time {
+    grid-column: 2;
+  }
+
+  .table-panel {
+    padding: 14px;
+  }
+
+  .trace-head {
+    grid-template-columns: 1fr;
+  }
+
+  .table-wrap {
+    overflow-x: visible;
+  }
+
+  table,
+  thead,
+  tbody,
+  tr,
+  th,
+  td {
+    display: block;
+  }
+
+  table {
+    min-width: 0;
+    border: 0;
+    background: transparent;
+  }
+
+  thead {
+    display: none;
+  }
+
+  tr {
+    margin-bottom: 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fff;
+    overflow: hidden;
+  }
+
+  td {
+    display: grid;
+    grid-template-columns: 82px minmax(0, 1fr);
+    gap: 10px;
+    padding: 11px 12px;
+    border-bottom: 1px solid #edf1f6;
+  }
+
+  td::before {
+    color: #647084;
+    font-size: 12px;
+    font-weight: 950;
+  }
+
+  td:nth-child(1)::before {
+    content: "成员";
+  }
+
+  td:nth-child(2)::before {
+    content: "来源";
+  }
+
+  td:nth-child(3)::before {
+    content: "所在群";
+  }
+
+  td:nth-child(4)::before {
+    content: "时间";
+  }
+
+  td:nth-child(5)::before {
+    content: "状态";
+  }
+
+  td:nth-child(6)::before {
+    content: "归因";
+  }
+
+  td:nth-child(7)::before {
+    content: "原始消息";
+  }
+
+  .raw-cell {
+    max-width: none;
+  }
+
+  .modal-card {
+    width: calc(100vw - 24px);
+  }
 }

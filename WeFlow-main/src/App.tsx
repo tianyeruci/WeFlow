@@ -91,7 +91,6 @@ function App() {
     ? settingsRouteState?.backgroundLocation ?? settingsBackgroundRef.current
     : location
   const isExportRoute = routeLocation.pathname === '/export'
-  const isInviteStatsRoute = routeLocation.pathname === '/invite-stats'
   const [themeHydrated, setThemeHydrated] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [showCloseDialog, setShowCloseDialog] = useState(false)
@@ -572,7 +571,7 @@ function App() {
       )}
       <TitleBar
         sidebarCollapsed={sidebarCollapsed}
-        onToggleSidebar={isInviteStatsRoute ? undefined : () => setSidebarCollapsed((prev) => !prev)}
+        onToggleSidebar={() => setSidebarCollapsed((prev) => !prev)}
       />
 
       {/* 全局悬浮进度胶囊 (处理：新版本提示、下载进度、错误提示) */}
@@ -691,9 +690,9 @@ function App() {
         onCancel={() => handleWindowCloseAction('cancel')}
       />
 
-      <div className={`main-layout ${isInviteStatsRoute ? 'invite-stats-shell' : ''}`}>
-        {!isInviteStatsRoute && <Sidebar collapsed={sidebarCollapsed} />}
-        <main className={`content ${isInviteStatsRoute ? 'content-invite-stats' : ''}`}>
+      <div className="main-layout">
+        <Sidebar collapsed={sidebarCollapsed} />
+        <main className="content">
           <RouteGuard>
             <div className={`export-keepalive-page ${isExportRoute ? 'active' : 'hidden'}`} aria-hidden={!isExportRoute}>
               <ExportPage />

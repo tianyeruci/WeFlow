@@ -1,0 +1,43 @@
+
+> weflow-remote-viewer@0.1.0 dev
+> next dev --port 3001
+
+▲ Next.js 16.2.6 (Turbopack)
+- Local:         http://localhost:3001
+- Network:       http://198.18.0.1:3001
+- Environments: .env.local
+✓ Ready in 6.5s
+
+ GET / 200 in 1195ms (next.js: 855ms, application-code: 340ms)
+ GET / 200 in 84ms (next.js: 5ms, application-code: 79ms)
+ GET /api/invite/tags 200 in 1762ms (next.js: 542ms, application-code: 1220ms)
+ GET /api/invite/dashboard?tagId=ffee9991-a271-4d78-a03a-70e9ae41b39a 200 in 205ms (next.js: 71ms, application-code: 134ms)
+ GET / 200 in 292ms (next.js: 8ms, application-code: 284ms)
+ GET /api/invite/tags 200 in 255ms (next.js: 10ms, application-code: 245ms)
+ GET /api/invite/dashboard?tagId=ffee9991-a271-4d78-a03a-70e9ae41b39a 200 in 130ms (next.js: 13ms, application-code: 117ms)
+○ Compiling /api/invite/member-trace ...
+ GET /api/invite/member-trace?tagId=ffee9991-a271-4d78-a03a-70e9ae41b39a&includeQuit=true 200 in 8.4s (next.js: 8.2s, application-code: 259ms)
+ GET / 200 in 413ms (next.js: 7ms, application-code: 406ms)
+ GET /api/invite/tags 200 in 1071ms (next.js: 6ms, application-code: 1065ms)
+ GET /api/invite/dashboard?tagId=ffee9991-a271-4d78-a03a-70e9ae41b39a 200 in 144ms (next.js: 9ms, application-code: 136ms)
+ GET /api/invite/member-trace?tagId=ffee9991-a271-4d78-a03a-70e9ae41b39a&includeQuit=true 200 in 235ms (next.js: 4ms, application-code: 232ms)
+ GET /api/invite/dashboard?tagId=f898d652-6d51-4581-baec-5ed9421360db 200 in 285ms (next.js: 3ms, application-code: 282ms)
+ GET /api/invite/dashboard?tagId=ffee9991-a271-4d78-a03a-70e9ae41b39a 200 in 257ms (next.js: 4ms, application-code: 253ms)
+ GET /api/invite/member-trace?tagId=ffee9991-a271-4d78-a03a-70e9ae41b39a&includeQuit=true 200 in 435ms (next.js: 69ms, application-code: 366ms)
+ GET /api/invite/tags 200 in 736ms (next.js: 4ms, application-code: 731ms)
+ POST /api/invite/sync 500 in 1430ms (next.js: 1413ms, application-code: 17ms)
+ GET / 200 in 290ms (next.js: 158ms, application-code: 132ms)
+ GET / 200 in 325ms (next.js: 164ms, application-code: 161ms)
+ POST /api/invite/sync 500 in 2.2s (next.js: 1340ms, application-code: 870ms)
+ GET / 200 in 749ms (next.js: 200ms, application-code: 549ms)
+ GET / 200 in 361ms (next.js: 17ms, application-code: 345ms)
+ GET / 200 in 263ms (next.js: 64ms, application-code: 199ms)
+ GET / 200 in 256ms (next.js: 141ms, application-code: 115ms)
+ POST /api/invite/sync 400 in 787ms (next.js: 65ms, application-code: 722ms)
+ GET / 200 in 485ms (next.js: 220ms, application-code: 265ms)
+ POST /api/invite/sync 409 in 791ms (next.js: 56ms, application-code: 735ms)
+ GET / 200 in 279ms (next.js: 157ms, application-code: 122ms)
+ POST /api/invite/sync 200 in 1672ms (next.js: 49ms, application-code: 1623ms)
+ GET / 200 in 327ms (next.js: 156ms, application-code: 171ms)
+ GET /api/invite/tags 200 in 349ms (next.js: 90ms, application-code: 259ms)
+ GET /api/invite/tags 200 in 1213ms (next.js: 3ms, application-code: 1210ms)

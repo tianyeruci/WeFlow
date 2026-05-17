@@ -208,6 +208,7 @@ export interface InviteDashboardData {
     groupCount: number
     totalMembers: number
     todayNewMembers: number
+    todayQuitMembers: number
     pendingCount: number
   }
   hourlyDistribution: Array<{ hour: number; count: number }>
@@ -256,7 +257,7 @@ export interface InviteScanLog {
   id: string
   tag_id: string
   tag_name: string
-  scan_mode?: 'incremental' | 'full'
+  scan_mode?: 'incremental'
   status: 'running' | 'completed' | 'failed' | 'skipped'
   started_at: number
   finished_at: number
@@ -1069,7 +1070,7 @@ export interface ElectronAPI {
     listGroups: () => Promise<InviteStatsResult<InviteStatsGroupRow[]>>
     setGroupTag: (groupId: string, tagId: string) => Promise<InviteStatsResult>
     clearGroupTag: (groupId: string) => Promise<InviteStatsResult>
-    scanActivity: (tagId: string, mode?: 'incremental' | 'full') => Promise<{ success: boolean; log?: InviteScanLog; error?: string }>
+    scanActivity: (tagId: string) => Promise<{ success: boolean; log?: InviteScanLog; error?: string }>
     getScanStatus: () => Promise<InviteStatsResult<{ running: boolean; active?: any; logs: InviteScanLog[] }>>
     getDashboard: (input: {
       tagId: string
@@ -1106,6 +1107,12 @@ export interface ElectronAPI {
     exportRawEvents: (payload: { filePath: string; format?: 'csv' | 'xlsx'; tagId?: string }) => Promise<{
       success: boolean
       count?: number
+      error?: string
+    }>
+    syncRemote: (options?: { endpoint?: string; token?: string }) => Promise<{
+      success: boolean
+      accountScope?: string
+      counts?: Record<string, number>
       error?: string
     }>
   }
