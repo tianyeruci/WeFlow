@@ -1,0 +1,1090 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WeFlow 邀请统计 Demo</title>
+  <style>
+    :root {
+      --ink: #202432;
+      --muted: #6e7483;
+      --line: #e6e9f0;
+      --paper: #ffffff;
+      --shell: #edf2f8;
+      --nav: #171a29;
+      --nav-soft: #22263a;
+      --blue: #3778e5;
+      --teal: #19b79b;
+      --amber: #f1a722;
+      --coral: #ef5f62;
+      --violet: #7855dc;
+      --green: #33a864;
+      --shadow: 0 16px 38px rgba(30, 39, 65, 0.12);
+      --radius: 8px;
+      --frame: 1440px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-width: var(--frame);
+      overflow-x: auto;
+      color: var(--ink);
+      background:
+        linear-gradient(90deg, rgba(55, 120, 229, 0.055) 1px, transparent 1px),
+        linear-gradient(180deg, #f7f9fc 0%, var(--shell) 100%);
+      background-size: 24px 24px, auto;
+      font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+      letter-spacing: 0;
+    }
+
+    button, input, select { font: inherit; }
+
+    button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 36px;
+      padding: 0 13px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--ink);
+      cursor: pointer;
+      transition: 0.16s ease;
+    }
+
+    button:hover { border-color: var(--blue); background: #eef4ff; }
+    button:disabled { opacity: 0.48; cursor: not-allowed; }
+
+    input, select {
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--ink);
+      padding: 0 12px;
+      outline: none;
+    }
+
+    input:focus, select:focus {
+      border-color: var(--blue);
+      box-shadow: 0 0 0 3px rgba(55, 120, 229, 0.13);
+    }
+
+    .app {
+      width: var(--frame);
+      min-width: var(--frame);
+      margin: 0 auto;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: grid;
+      grid-template-columns: 300px 1fr;
+      gap: 18px;
+      align-items: stretch;
+      height: 78px;
+      padding: 0 30px;
+      color: #fff;
+      background: var(--nav);
+      box-shadow: 0 6px 20px rgba(16, 18, 32, 0.2);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 48px;
+      height: 48px;
+      border-radius: 8px;
+      background:
+        radial-gradient(circle at 35% 20%, #ffe27a 0 18%, transparent 19%),
+        linear-gradient(135deg, #f1a722, #43335d 60%, #111827);
+      box-shadow: 0 9px 24px rgba(0, 0, 0, 0.28);
+      color: #ffe87a;
+      font-size: 20px;
+      font-weight: 900;
+    }
+
+    .brand strong, .brand span {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .brand strong { font-size: 22px; font-weight: 900; }
+    .brand span { margin-top: 3px; color: rgba(255, 255, 255, 0.62); font-size: 12px; font-weight: 700; }
+
+    .screen-nav {
+      display: flex;
+      align-items: stretch;
+      height: 100%;
+      gap: 10px;
+    }
+
+    .screen-nav button {
+      position: relative;
+      min-width: 162px;
+      height: 100%;
+      padding: 0 18px;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      color: rgba(255, 255, 255, 0.78);
+      font-size: 16px;
+      font-weight: 900;
+    }
+
+    .screen-nav button::after {
+      position: absolute;
+      right: 14px;
+      bottom: 0;
+      left: 14px;
+      height: 4px;
+      border-radius: 4px 4px 0 0;
+      background: transparent;
+      content: "";
+    }
+
+    .screen-nav button:hover { background: rgba(255, 255, 255, 0.05); color: #fff; }
+    .screen-nav button.active { background: var(--nav-soft); color: #fff; }
+    .screen-nav button.active::after { background: linear-gradient(90deg, var(--blue), var(--violet)); }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 20px;
+      height: 20px;
+      border-radius: 999px;
+      background: var(--coral);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .screen { padding: 22px 26px 28px; }
+
+    .toolbar {
+      display: grid;
+      grid-template-columns: minmax(360px, 540px) auto;
+      gap: 16px;
+      align-items: end;
+      justify-content: start;
+      margin-bottom: 14px;
+      padding: 18px;
+      background: rgba(255, 255, 255, 0.92);
+      border: 1px solid rgba(231, 233, 240, 0.9);
+      border-radius: var(--radius);
+      box-shadow: 0 10px 28px rgba(40, 47, 70, 0.08);
+      backdrop-filter: blur(10px);
+    }
+
+    .toolbar.with-management {
+      grid-template-columns: minmax(360px, 520px) auto minmax(190px, 1fr);
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .field label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .tag-control {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 8px;
+      align-items: center;
+    }
+
+    .tag-control.with-delete { grid-template-columns: minmax(0, 1fr) 38px; }
+    .tag-control button { min-height: 38px; padding: 0; background: #f8f9fc; color: var(--muted); }
+    .tag-control button:hover { color: #c84144; border-color: #ffd6d6; background: #fff0f0; }
+
+    .scan-actions {
+      display: grid;
+      grid-template-columns: 150px 150px;
+      gap: 10px;
+    }
+
+    .scan-actions button, .create-tag-btn { min-height: 46px; }
+    .primary-btn { border-color: transparent !important; background: linear-gradient(135deg, var(--blue), var(--violet)) !important; color: #fff !important; box-shadow: 0 12px 24px rgba(55, 120, 229, 0.22); }
+    .danger-btn { border-color: #ffd6d6 !important; background: #fff0f0 !important; color: #c84144 !important; font-weight: 900; }
+    .create-tag-btn { justify-self: end; min-width: 170px; border-color: rgba(59, 130, 246, 0.22); background: #f8fbff; color: var(--blue); font-weight: 900; }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(170px, 1fr));
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+
+    .metric-card, .panel {
+      background: var(--paper);
+      border: 1px solid rgba(231, 233, 240, 0.9);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+
+    .metric-card {
+      position: relative;
+      display: grid;
+      grid-template-columns: 54px 1fr;
+      gap: 15px;
+      align-items: center;
+      min-height: 118px;
+      padding: 18px;
+      overflow: hidden;
+    }
+
+    .metric-card::before {
+      position: absolute;
+      inset: 0 0 auto;
+      height: 4px;
+      background: var(--blue);
+      content: "";
+    }
+
+    .metric-card.green::before { background: var(--teal); }
+    .metric-card.amber::before { background: var(--amber); }
+    .metric-card.violet::before { background: var(--violet); }
+    .metric-card.red::before { background: var(--coral); }
+
+    .metric-icon {
+      display: grid;
+      place-items: center;
+      width: 54px;
+      height: 54px;
+      border-radius: 8px;
+      color: var(--blue);
+      background: #e8f0ff;
+      font-size: 23px;
+      font-weight: 900;
+    }
+
+    .green .metric-icon { color: var(--teal); background: #e5fbf6; }
+    .amber .metric-icon { color: #a46600; background: #fff5dc; }
+    .violet .metric-icon { color: var(--violet); background: #f1edff; }
+    .red .metric-icon { color: var(--coral); background: #ffebeb; }
+
+    .metric-card strong { display: block; font-size: 28px; line-height: 1; font-weight: 900; }
+    .metric-card span { display: block; margin-top: 8px; color: var(--muted); font-size: 13px; font-weight: 800; }
+
+    .metric-toggle {
+      position: absolute;
+      right: 14px;
+      bottom: 12px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 900;
+      cursor: pointer;
+    }
+
+    .metric-toggle input, .check input { min-height: auto; width: 14px; height: 14px; padding: 0; accent-color: var(--teal); }
+
+    .dashboard-main {
+      display: grid;
+      grid-template-columns: 360px minmax(520px, 1fr) 300px;
+      gap: 14px;
+      align-items: start;
+    }
+
+    .left-column, .right-column { display: grid; gap: 14px; min-width: 0; }
+    .panel { min-width: 0; padding: 16px; }
+
+    .panel-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 40px;
+      margin-bottom: 12px;
+    }
+
+    .panel-title h2 { margin: 0; font-size: 18px; line-height: 1.25; font-weight: 900; }
+    .panel-title p { margin: 4px 0 0; color: var(--muted); font-size: 12px; font-weight: 800; }
+
+    .ranking-tools {
+      display: grid;
+      grid-template-columns: minmax(190px, 1fr) minmax(420px, 520px);
+      gap: 10px;
+      margin-bottom: 12px;
+      padding: 10px;
+      background: #f7f8fb;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+    }
+
+    .datetime-range {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+      align-items: center;
+      gap: 8px;
+      min-height: 36px;
+      padding: 0 9px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .datetime-range input {
+      min-width: 0;
+      min-height: 30px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+      font-size: 12px;
+    }
+
+    .segment {
+      display: inline-flex;
+      gap: 4px;
+      padding: 3px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .segment button {
+      width: 30px;
+      min-height: 28px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+    }
+
+    .segment button.active { background: linear-gradient(135deg, var(--blue), var(--violet)); color: #fff; }
+
+    .chart-card {
+      position: relative;
+      height: 262px;
+      padding: 20px 10px 8px 42px;
+    }
+
+    .axis-line {
+      position: absolute;
+      left: 52px;
+      right: 20px;
+      height: 1px;
+      background: #e9edf5;
+    }
+
+    .axis-line:nth-child(1) { top: 36px; }
+    .axis-line:nth-child(2) { top: 87px; }
+    .axis-line:nth-child(3) { top: 138px; }
+    .axis-line:nth-child(4) { top: 189px; }
+
+    .sparkline {
+      position: absolute;
+      inset: 32px 20px 34px 52px;
+      width: calc(100% - 72px);
+      height: 190px;
+      overflow: visible;
+    }
+
+    .sparkline polyline { fill: none; stroke: #3c7cff; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+    .sparkline circle { fill: #fff; stroke: #3c7cff; stroke-width: 3; }
+
+    .chart-labels {
+      position: absolute;
+      right: 16px;
+      bottom: 8px;
+      left: 48px;
+      display: flex;
+      justify-content: space-between;
+      color: #73809a;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .bar-chart {
+      display: grid;
+      gap: 19px;
+      min-height: 390px;
+      padding: 22px 8px 10px;
+    }
+
+    .bar-row {
+      display: grid;
+      grid-template-columns: 150px minmax(0, 1fr) 34px;
+      align-items: center;
+      gap: 12px;
+      color: #5d687c;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .bar-row label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      text-align: right;
+    }
+
+    .bar-track {
+      height: 13px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #edf2f8, #f9fbfe);
+    }
+
+    .bar-track i {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      background: var(--bar, var(--blue));
+    }
+
+    .rank-line {
+      display: grid;
+      grid-template-columns: 30px minmax(0, 1fr) 68px;
+      align-items: center;
+      gap: 10px;
+      min-height: 44px;
+      padding-bottom: 9px;
+      border-bottom: 1px solid #f0f2f6;
+    }
+
+    .rank-line:last-child { border-bottom: 0; padding-bottom: 0; }
+    .rank-line b { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; color: #fff; background: var(--amber); font-size: 13px; font-weight: 900; }
+    .rank-line b.muted { background: #b7bdc9; }
+    .rank-line span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 900; }
+    .rank-line strong { text-align: right; font-size: 13px; }
+
+    .mini-bar { height: 8px; margin-top: 7px; background: #eef1f6; border-radius: 999px; overflow: hidden; }
+    .mini-bar i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--coral), #ff9281); }
+
+    .activity-line {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      min-height: 58px;
+      padding: 10px 0;
+      border-bottom: 1px solid #f0f2f6;
+    }
+
+    .activity-line:last-child { border-bottom: 0; }
+    .activity-line div { min-width: 0; }
+    .activity-line strong, .activity-line span, .activity-line em { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .activity-line strong { font-weight: 900; }
+    .activity-line span, .activity-line em, .activity-line time { color: var(--muted); font-size: 12px; font-style: normal; font-weight: 700; }
+
+    .avatar {
+      display: grid;
+      place-items: center;
+      width: 42px;
+      height: 42px;
+      overflow: hidden;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--blue), var(--teal));
+      color: #fff;
+      font-weight: 900;
+    }
+
+    .status { display: inline-flex; align-items: center; min-height: 24px; padding: 0 9px; border-radius: 8px; background: #f0f2f6; color: var(--muted); font-size: 12px; font-weight: 800; }
+
+    .table-panel { min-height: 560px; }
+    .table-tools { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+    .table-tools select { max-width: 180px; }
+    .table-tools .datetime-range { min-width: 380px; }
+
+    .search {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 220px;
+      min-height: 36px;
+      padding: 0 8px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .search input { flex: 1; min-width: 0; min-height: 30px; padding: 0; border: 0; background: transparent; box-shadow: none; }
+    .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th {
+      height: 44px;
+      padding: 0 12px;
+      color: var(--muted);
+      background: #f7f8fb;
+      text-align: left;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    td {
+      height: 58px;
+      padding: 10px 12px;
+      border-top: 1px solid var(--line);
+      font-weight: 800;
+      vertical-align: middle;
+    }
+
+    .group-cell, .member-cell { display: grid; gap: 2px; }
+    .group-cell strong, .member-cell strong { font-weight: 900; }
+    .group-cell span, .member-cell span { color: var(--muted); font-size: 12px; }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 0 10px;
+      border-radius: 8px;
+      background: #e5fbf6;
+      color: #0d8f7a;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .pill.quit, .pill.invalid { background: #fff0f0; color: #c84144; }
+    .pill.pending { background: #fff5dc; color: #a46600; }
+
+    .raw-cell {
+      max-width: 360px;
+      cursor: default;
+    }
+
+    .raw-cell span {
+      display: -webkit-box;
+      overflow: hidden;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      color: #4d5870;
+      line-height: 1.45;
+    }
+
+    .raw-cell button {
+      min-height: 24px;
+      margin-top: 5px;
+      padding: 0 8px;
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .check {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 36px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .pending-list { display: grid; gap: 12px; }
+    .pending-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 14px;
+      align-items: center;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+    }
+
+    .pending-card h3 { margin: 8px 0 6px; font-size: 17px; }
+    .pending-card p { margin: 0; color: #4d5870; font-weight: 800; }
+    .pending-meta { display: flex; gap: 12px; margin-top: 10px; color: var(--muted); font-size: 12px; font-weight: 800; }
+    .pending-actions { display: flex; gap: 10px; }
+
+    .empty-state {
+      display: grid;
+      place-items: center;
+      min-height: 320px;
+      border: 1px dashed #d9dfeb;
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.7);
+      text-align: center;
+    }
+
+    .empty-state h2 { margin: 10px 0 8px; font-size: 22px; }
+    .empty-state p { margin: 0; color: var(--muted); font-weight: 700; }
+
+    .view { display: none; }
+    .view.active { display: block; }
+
+    .modal-mask {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(17, 24, 39, 0.38);
+      backdrop-filter: blur(5px);
+    }
+
+    .modal {
+      width: min(480px, 100%);
+      padding: 22px;
+      border-radius: 12px;
+      background: #fff;
+      box-shadow: 0 24px 80px rgba(17, 24, 39, 0.28);
+    }
+
+    .raw-modal { width: min(720px, 100%); }
+    .modal h3 { margin: 0 0 8px; font-size: 20px; }
+    .modal p { margin: 0 0 16px; color: var(--muted); font-weight: 700; line-height: 1.6; }
+    .modal textarea { width: 100%; min-height: 140px; resize: vertical; border: 1px solid var(--line); border-radius: 8px; padding: 12px; font: inherit; line-height: 1.6; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">邀</div>
+        <div>
+          <strong>WeFlow 邀请统计</strong>
+          <span>本地微信群邀请归因大屏</span>
+        </div>
+      </div>
+      <nav class="screen-nav" aria-label="邀请统计视图">
+        <button class="active" data-view-tab="dashboard">▥ 数据大屏</button>
+        <button data-view-tab="groups">◇ 发售群列表</button>
+        <button data-view-tab="trace">♙ 群成员溯源</button>
+        <button data-view-tab="pending">✓ 待确认记录 <span class="badge">9</span></button>
+      </nav>
+    </header>
+
+    <main class="screen">
+      <section class="toolbar" id="toolbar">
+        <div class="field activity">
+          <label>活动标签</label>
+          <div class="tag-control" id="tagControl">
+            <select id="tagSelect">
+              <option value="">请选择活动标签</option>
+              <option value="auto" selected>自动</option>
+              <option value="pull">拉新</option>
+              <option value="other">其他</option>
+            </select>
+            <button type="button" id="deleteTagBtn" title="删除活动标签">⌫</button>
+          </div>
+        </div>
+        <div class="scan-actions">
+          <button class="primary-btn" type="button">↻ 增量扫描</button>
+          <button class="danger-btn" type="button">↻ 全局扫描</button>
+        </div>
+        <button class="create-tag-btn" type="button" id="createTagBtn">＋ 创建活动标签</button>
+      </section>
+
+      <section class="view active" id="view-dashboard">
+        <section class="metrics">
+          <article class="metric-card">
+            <div class="metric-icon">✦</div>
+            <div><strong>1</strong><span>活跃机器人</span></div>
+          </article>
+          <article class="metric-card green">
+            <div class="metric-icon">◇</div>
+            <div><strong>1</strong><span>监控群组</span></div>
+          </article>
+          <article class="metric-card amber">
+            <div class="metric-icon">♙</div>
+            <div><strong>223</strong><span>总成员数仅在群</span></div>
+            <label class="metric-toggle"><input type="checkbox"> 含退群</label>
+          </article>
+          <article class="metric-card violet">
+            <div class="metric-icon">▥</div>
+            <div><strong>0</strong><span>今日新增</span></div>
+          </article>
+          <article class="metric-card red">
+            <div class="metric-icon">✓</div>
+            <div><strong>9</strong><span>待确认记录</span></div>
+          </article>
+        </section>
+
+        <section class="dashboard-main">
+          <div class="left-column">
+            <section class="panel">
+              <div class="panel-title">
+                <div>
+                  <h2>进群时段分布</h2>
+                  <p>按当前活动标签全部有效入群记录统计</p>
+                </div>
+              </div>
+              <div class="chart-card">
+                <i class="axis-line"></i><i class="axis-line"></i><i class="axis-line"></i><i class="axis-line"></i>
+                <svg class="sparkline" viewBox="0 0 280 190" aria-hidden="true">
+                  <polyline points="0,178 50,178 100,178 150,178 190,176 214,60 224,10 236,178 280,178"></polyline>
+                  <circle cx="214" cy="60" r="4"></circle>
+                  <circle cx="224" cy="10" r="4"></circle>
+                </svg>
+                <div class="chart-labels"><span>0时</span><span>4时</span><span>8时</span><span>12时</span><span>16时</span><span>20时</span></div>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-title">
+                <div>
+                  <h2>群人数展示</h2>
+                  <p>按当前活动标签下监控群组排序</p>
+                </div>
+                <button title="导出原始事件">⇩</button>
+              </div>
+              <div class="rank-line">
+                <b>1</b>
+                <div><span>小龙虾自动化训练营</span><div class="mini-bar"><i style="width: 100%"></i></div></div>
+                <strong>223 人</strong>
+              </div>
+              <div class="rank-line">
+                <b class="muted">2</b>
+                <div><span>发售最靠谱的人</span><div class="mini-bar"><i style="width: 52%"></i></div></div>
+                <strong>116 人</strong>
+              </div>
+            </section>
+          </div>
+
+          <section class="panel">
+            <div class="panel-title">
+              <div>
+                <h2>邀请人数排行榜</h2>
+                <p>【自动】招募者 6 名，有效入群人数 18</p>
+              </div>
+              <div class="segment">
+                <button class="active" title="柱状图">▥</button>
+                <button title="饼图">◷</button>
+                <button title="导出排行榜">⇩</button>
+              </div>
+            </div>
+            <div class="ranking-tools">
+              <select>
+                <option>当前活动下全部群</option>
+                <option>小龙虾自动化训练营</option>
+                <option>发售最靠谱的人</option>
+              </select>
+              <div class="datetime-range" aria-label="排行榜时间范围">
+                <input type="datetime-local" step="1" value="2026-01-02T13:45:58" aria-label="排行榜开始时间">
+                <span>-</span>
+                <input type="datetime-local" step="1" value="2026-05-24T19:45:20" aria-label="排行榜结束时间">
+              </div>
+            </div>
+            <div class="bar-chart">
+              <div class="bar-row"><label>文姐🍀kevin</label><div class="bar-track"><i style="width: 100%; --bar:#18b889"></i></div><strong>4</strong></div>
+              <div class="bar-row"><label>华夏智诚于老师</label><div class="bar-track"><i style="width: 75%; --bar:#5d6fa8"></i></div><strong>3</strong></div>
+              <div class="bar-row"><label>义静CN（任乾超）</label><div class="bar-track"><i style="width: 50%; --bar:#c583d7"></i></div><strong>2</strong></div>
+              <div class="bar-row"><label>右军</label><div class="bar-track"><i style="width: 25%; --bar:#e7c46d"></i></div><strong>1</strong></div>
+            </div>
+          </section>
+
+          <aside class="right-column">
+            <section class="panel">
+              <div class="panel-title">
+                <h2>实时动态</h2>
+                <span class="status">空闲</span>
+              </div>
+              <div class="activity-line"><div class="avatar">小</div><div><strong>小齐</strong><span>邀请 · 禾顽君 破局</span><em>发售最靠谱的人</em></div><time>05/14 22:23</time></div>
+              <div class="activity-line"><div class="avatar">子</div><div><strong>子陈</strong><span>邀请 · 文姐🍀kevin</span><em>发售最靠谱的人</em></div><time>05/13 22:49</time></div>
+              <div class="activity-line"><div class="avatar">林</div><div><strong>林允</strong><span>邀请 · 文姐🍀kevin</span><em>发售最靠谱的人</em></div><time>05/13 22:25</time></div>
+              <div class="activity-line"><div class="avatar">沐</div><div><strong>沐兮663</strong><span>邀请 · 文姐🍀kevin</span><em>发售最靠谱的人</em></div><time>05/13 22:24</time></div>
+            </section>
+          </aside>
+        </section>
+      </section>
+
+      <section class="view" id="view-groups">
+        <section class="panel table-panel">
+          <div class="panel-title">
+            <div>
+              <h2>发售群列表</h2>
+              <p>3 个微信群，可在本页创建或删除活动标签</p>
+            </div>
+            <div class="table-tools">
+              <div class="search">⌕ <input placeholder="搜索群名 / 群 ID"></div>
+              <select><option>成员数</option><option>今日新增</option><option>最近扫描</option></select>
+              <button>⇩ 导出</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>微信群</th><th>成员数</th><th>今日新增</th><th>今日退群</th><th>活动标签</th><th>最近扫描</th><th>最近邀请</th><th>操作</th></tr></thead>
+              <tbody>
+                <tr><td><div class="group-cell"><strong>小龙虾自动化训练营</strong><span>21912345@chatroom</span></div></td><td>223</td><td>0</td><td>1</td><td><select><option>自动</option><option>拉新</option></select></td><td>05/17 07:45</td><td>05/07 22:54</td><td><button>清除</button></td></tr>
+                <tr><td><div class="group-cell"><strong>发售最靠谱的人</strong><span>18088999@chatroom</span></div></td><td>116</td><td>4</td><td>0</td><td><select><option>拉新</option><option>自动</option></select></td><td>05/17 07:42</td><td>05/14 22:23</td><td><button>清除</button></td></tr>
+                <tr><td><div class="group-cell"><strong>AI 时代超级 IP 课</strong><span>88333666@chatroom</span></div></td><td>96</td><td>2</td><td>0</td><td><select><option>其他</option><option>自动</option></select></td><td>05/17 07:40</td><td>05/13 22:49</td><td><button>清除</button></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section class="view" id="view-trace">
+        <section class="panel table-panel">
+          <div class="panel-title">
+            <div>
+              <h2>群成员溯源</h2>
+              <p>当前筛选 <span id="traceCount">8</span> 条</p>
+            </div>
+            <div class="table-tools">
+              <select id="traceGroup"><option value="">全部群</option><option>小龙虾自动化训练营</option><option>发售最靠谱的人</option></select>
+              <div class="search">⌕ <input id="traceKeyword" placeholder="成员昵称"></div>
+              <div class="datetime-range" aria-label="群成员溯源时间范围">
+                <input type="datetime-local" step="1" value="2026-01-02T13:45:58" aria-label="溯源开始时间">
+                <span>-</span>
+                <input type="datetime-local" step="1" value="2026-05-24T19:45:20" aria-label="溯源结束时间">
+              </div>
+              <select id="traceStatus">
+                <option value="">全部状态</option>
+                <option value="active">未退出群</option>
+                <option value="quit">已退出群</option>
+                <option value="pending">待确认</option>
+              </select>
+              <select id="traceAttribution">
+                <option value="">全部归因</option>
+                <option value="valid">有效</option>
+                <option value="invalid">无效</option>
+                <option value="pending">待确认</option>
+              </select>
+              <label class="check"><input type="checkbox" checked> 含退群</label>
+              <button>↻ 查询</button>
+              <button>⇩ 导出</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>成员</th><th>来源</th><th>所在群</th><th>时间</th><th>状态</th><th>归因</th><th>原始消息</th></tr></thead>
+              <tbody id="traceBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section class="view" id="view-pending">
+        <section class="panel table-panel">
+          <div class="panel-title">
+            <div>
+              <h2>待确认记录</h2>
+              <p>9 条需要人工处理</p>
+            </div>
+            <div class="table-tools">
+              <button>↻ 刷新</button>
+              <button>⇩ 导出原始事件</button>
+            </div>
+          </div>
+          <div class="pending-list">
+            <article class="pending-card">
+              <div>
+                <span class="pill pending">入群待确认</span>
+                <h3>未知成员</h3>
+                <p>"禾顽君 破局"邀请"小齐"加入了群聊，但本地成员列表存在同名候选，需要人工确认 wxid。</p>
+                <div class="pending-meta"><span>发售最靠谱的人</span><span>2026/5/14 22:23:56</span><span>置信度 62%</span></div>
+              </div>
+              <div class="pending-actions"><button class="primary-btn">✓ 保存确认</button><button>× 忽略</button></div>
+            </article>
+            <article class="pending-card">
+              <div>
+                <span class="pill pending">扫码来源未知</span>
+                <h3>待识别成员</h3>
+                <p>"夏满满"通过扫描二维码加入群聊，二维码分享者无法从系统消息中确认。</p>
+                <div class="pending-meta"><span>AI 时代超级 IP 课</span><span>2026/5/13 21:08:12</span><span>置信度 48%</span></div>
+              </div>
+              <div class="pending-actions"><button class="primary-btn">✓ 保存确认</button><button>× 忽略</button></div>
+            </article>
+          </div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal-mask hidden" id="createModal" role="dialog" aria-modal="true" aria-label="创建活动标签">
+    <form class="modal" id="createForm">
+      <h3>创建活动标签</h3>
+      <p>活动标签会把多个微信群归为同一次发售或活动统计口径。</p>
+      <input id="newTagName" maxlength="32" placeholder="请输入活动标签名称" autocomplete="off">
+      <div class="modal-actions">
+        <button type="button" id="cancelCreate">取消</button>
+        <button class="primary-btn" type="submit">确认创建</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="modal-mask hidden" id="rawModal" role="dialog" aria-modal="true" aria-label="完整原始消息">
+    <div class="modal raw-modal">
+      <h3>完整原始消息</h3>
+      <p>双击原始消息或点击“查看”时打开，避免表格列被长文本撑开。</p>
+      <textarea id="rawText" readonly></textarea>
+      <div class="modal-actions">
+        <button class="primary-btn" id="closeRaw" type="button">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const state = {
+      view: "dashboard",
+      tags: [
+        { id: "auto", name: "自动" },
+        { id: "pull", name: "拉新" },
+        { id: "other", name: "其他" }
+      ],
+      selectedTag: "auto"
+    };
+
+    const traceRows = [
+      { member: "bene", wxid: "wxid_7p5zlfs5ixuz21", source: "邀请 · 华夏智诚于老师", group: "小龙虾自动化训练营", time: "2026/5/7 22:54:40", status: "active", attribution: "valid", raw: "\"华夏智诚于老师\"邀请\"bene\"加入了群聊" },
+      { member: "鹰眼", wxid: "wxid_zi3pdafyms7y22", source: "邀请 · 右军", group: "小龙虾自动化训练营", time: "2026/4/9 17:19:39", status: "active", attribution: "valid", raw: "\"右军\"邀请\"鹰眼\"加入了群聊" },
+      { member: "linhao", wxid: "wxid_i61tbnx7puo21", source: "邀请 · 义静CN（任乾超）", group: "小龙虾自动化训练营", time: "2026/4/8 23:12:16", status: "active", attribution: "valid", raw: "\"义静CN（任乾超）\"邀请\"linhao\"加入了群聊" },
+      { member: "Wynn", wxid: "wxid_k8e6p3wgl7s422", source: "邀请 · 阿钦", group: "小龙虾自动化训练营", time: "2026/4/8 17:00:55", status: "quit", attribution: "invalid", raw: "\"阿钦\"邀请\"Wynn\"加入了群聊，随后\"Wynn\"退出了群聊" },
+      { member: "透灵", wxid: "yinniyouling", source: "邀请 · 义静CN（任乾超）", group: "小龙虾自动化训练营", time: "2026/4/8 00:31:28", status: "active", attribution: "valid", raw: "\"义静CN（任乾超）\"邀请\"透灵\"加入了群聊" },
+      { member: "小齐", wxid: "wxid_d43ynxplbt5912", source: "邀请 · 禾顽君 破局", group: "发售最靠谱的人", time: "2026/5/14 22:23:56", status: "pending", attribution: "pending", raw: "\"禾顽君 破局\"邀请\"小齐\"加入了群聊。该昵称在目标群内存在多个候选成员，需要人工确认后才能写入有效归因。" }
+    ];
+
+    const navButtons = document.querySelectorAll("[data-view-tab]");
+    const toolbar = document.getElementById("toolbar");
+    const tagControl = document.getElementById("tagControl");
+    const tagSelect = document.getElementById("tagSelect");
+    const deleteTagBtn = document.getElementById("deleteTagBtn");
+    const createTagBtn = document.getElementById("createTagBtn");
+    const createModal = document.getElementById("createModal");
+    const createForm = document.getElementById("createForm");
+    const newTagName = document.getElementById("newTagName");
+    const rawModal = document.getElementById("rawModal");
+    const rawText = document.getElementById("rawText");
+
+    function renderToolbar() {
+      const canManage = state.view === "groups";
+      toolbar.classList.toggle("with-management", canManage);
+      tagControl.classList.toggle("with-delete", canManage);
+      deleteTagBtn.classList.toggle("hidden", !canManage);
+      createTagBtn.classList.toggle("hidden", !canManage);
+    }
+
+    function renderTags() {
+      tagSelect.innerHTML = '<option value="">请选择活动标签</option>' + state.tags.map(tag => (
+        `<option value="${tag.id}" ${tag.id === state.selectedTag ? "selected" : ""}>${tag.name}</option>`
+      )).join("");
+    }
+
+    function setView(view) {
+      state.view = view;
+      navButtons.forEach(button => button.classList.toggle("active", button.dataset.viewTab === view));
+      document.querySelectorAll(".view").forEach(section => section.classList.remove("active"));
+      document.getElementById(`view-${view}`).classList.add("active");
+      renderToolbar();
+    }
+
+    function renderTrace() {
+      const keyword = document.getElementById("traceKeyword").value.trim().toLowerCase();
+      const group = document.getElementById("traceGroup").value;
+      const status = document.getElementById("traceStatus").value;
+      const attribution = document.getElementById("traceAttribution").value;
+      const rows = traceRows.filter(row => {
+        if (keyword && !row.member.toLowerCase().includes(keyword)) return false;
+        if (group && row.group !== group) return false;
+        if (status && row.status !== status) return false;
+        if (attribution && row.attribution !== attribution) return false;
+        return true;
+      });
+
+      document.getElementById("traceCount").textContent = rows.length;
+      document.getElementById("traceBody").innerHTML = rows.map(row => {
+        const statusText = row.status === "active" ? "未退出群" : row.status === "quit" ? "已退出群" : "待确认";
+        const attributionText = row.attribution === "valid" ? "有效" : row.attribution === "invalid" ? "无效" : "待确认";
+        const pillClass = row.status === "active" ? "" : row.status === "quit" ? "quit" : "pending";
+        const attributionClass = row.attribution === "valid" ? "" : row.attribution === "invalid" ? "invalid" : "pending";
+        return `
+          <tr>
+            <td><div class="member-cell"><strong>${row.member}</strong><span>${row.wxid}</span></div></td>
+            <td>${row.source}</td>
+            <td>${row.group}</td>
+            <td>${row.time}</td>
+            <td><span class="pill ${pillClass}">${statusText}</span></td>
+            <td><span class="pill ${attributionClass}">${attributionText}</span></td>
+            <td class="raw-cell" data-raw="${row.raw.replace(/"/g, "&quot;")}"><span>${row.raw}</span><button type="button">查看</button></td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    navButtons.forEach(button => button.addEventListener("click", () => setView(button.dataset.viewTab)));
+    tagSelect.addEventListener("change", event => { state.selectedTag = event.target.value; });
+
+    createTagBtn.addEventListener("click", () => {
+      newTagName.value = "";
+      createModal.classList.remove("hidden");
+      setTimeout(() => newTagName.focus(), 0);
+    });
+
+    document.getElementById("cancelCreate").addEventListener("click", () => createModal.classList.add("hidden"));
+    createModal.addEventListener("mousedown", event => {
+      if (event.target === createModal) createModal.classList.add("hidden");
+    });
+
+    createForm.addEventListener("submit", event => {
+      event.preventDefault();
+      const name = newTagName.value.trim();
+      if (!name) return;
+      const id = `tag-${Date.now()}`;
+      state.tags.push({ id, name });
+      state.selectedTag = id;
+      renderTags();
+      createModal.classList.add("hidden");
+    });
+
+    deleteTagBtn.addEventListener("click", () => {
+      if (!state.selectedTag) return;
+      const current = state.tags.find(tag => tag.id === state.selectedTag);
+      if (!current || !confirm(`确认删除活动标签“${current.name}”？群绑定和统计口径会随之清理。`)) return;
+      state.tags = state.tags.filter(tag => tag.id !== state.selectedTag);
+      state.selectedTag = state.tags[0]?.id || "";
+      renderTags();
+    });
+
+    ["traceKeyword", "traceGroup", "traceStatus", "traceAttribution"].forEach(id => {
+      document.getElementById(id).addEventListener("input", renderTrace);
+      document.getElementById(id).addEventListener("change", renderTrace);
+    });
+
+    document.addEventListener("click", event => {
+      const rawCell = event.target.closest?.(".raw-cell");
+      if (!rawCell) return;
+      rawText.value = rawCell.dataset.raw || rawCell.innerText.trim();
+      rawModal.classList.remove("hidden");
+    });
+
+    document.getElementById("closeRaw").addEventListener("click", () => rawModal.classList.add("hidden"));
+    rawModal.addEventListener("mousedown", event => {
+      if (event.target === rawModal) rawModal.classList.add("hidden");
+    });
+
+    renderToolbar();
+    renderTags();
+    renderTrace();
+  </script>
+</body>
+</html>
