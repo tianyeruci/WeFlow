@@ -1,4 +1,4 @@
-import { supabaseDelete, supabaseUpsert } from './supabase-rest'
+import { supabaseUpsert } from './supabase-rest'
 
 type ActivityTagRow = {
   id: string
@@ -20,6 +20,39 @@ type GroupTagBindingRow = {
   enabled: boolean
   last_scan_at: string | null
   last_invite_time: string | null
+  created_at: string | null
+  updated_at: string | null
+  raw_json: unknown
+}
+
+type RawEventRow = {
+  id: string
+  account_scope: string
+  dedup_key: string
+  event_type: string
+  group_id: string
+  group_name: string
+  member_name: string
+  member_wxid: string
+  related_name: string
+  related_wxid: string
+  join_type: string
+  quit_type: string
+  status: string
+  valid_flag: number
+  delete_flag: number
+  created_time: string | null
+  invite_time: string | null
+  exit_time: string | null
+  source_message_id: string
+  source_local_id: string | null
+  source_create_time: string | null
+  raw_message: string
+  parsed_content: string
+  confidence: number
+  sync_status: string
+  sync_error: string
+  last_sync_at: string | null
   created_at: string | null
   updated_at: string | null
   raw_json: unknown
@@ -123,6 +156,7 @@ export type InviteSyncPayload = {
   accountScope: string
   activityTags: ActivityTagRow[]
   groupTagBindings: GroupTagBindingRow[]
+  rawEvents?: RawEventRow[]
   inviteEvents: InviteEventRow[]
   quitEvents: QuitEventRow[]
   memberIdentityBindings: MemberIdentityBindingRow[]
@@ -135,37 +169,38 @@ export async function syncInvitePayload(payload: InviteSyncPayload) {
     throw new Error('accountScope is required')
   }
 
-  await replaceScopeRows(accountScope, payload)
+  const counts = await upsertScopeRows(payload)
 
   return {
     accountScope,
-    counts: {
-      activityTags: payload.activityTags.length,
-      groupTagBindings: payload.groupTagBindings.length,
-      inviteEvents: payload.inviteEvents.length,
-      quitEvents: payload.quitEvents.length,
-      memberIdentityBindings: payload.memberIdentityBindings.length,
-      scanLogs: payload.scanLogs.length
-    }
+    counts
   }
 }
 
-async function replaceScopeRows(accountScope: string, payload: InviteSyncPayload) {
-  const scopeFilter = { account_scope: `eq.${accountScope}` }
+async function upsertScopeRows(payload: InviteSyncPayload) {
+  const activityTags = payload.activityTags.filter(row => row.id)
+  const activityTagIds = new Set(activityTags.map(row => row.id))
+  const groupTagBindings = payload.groupTagBindings.filter(row =>
+    row.activity_tag_id && activityTagIds.has(row.activity_tag_id)
+  )
 
-  await supabaseDelete('scan_logs', scopeFilter)
-  await supabaseDelete('member_identity_bindings', scopeFilter)
-  await supabaseDelete('quit_events', scopeFilter)
-  await supabaseDelete('invite_events', scopeFilter)
-  await supabaseDelete('group_tag_bindings', scopeFilter)
-  await supabaseDelete('activity_tags', scopeFilter)
-
-  await supabaseUpsert('activity_tags', payload.activityTags, { onConflict: ['id'] })
-  await supabaseUpsert('group_tag_bindings', payload.groupTagBindings, {
-    onConflict: ['account_scope', 'group_id', 'activity_tag_id']
+  await supabaseUpsert('activity_tags', activityTags, { onConflict: ['id'] })
+  await supabaseUpsert('group_tag_bindings', groupTagBindings, {
+    onConflict: ['account_scope', 'group_id']
   })
+  await supabaseUpsert('raw_events', payload.rawEvents || [], { onConflict: ['account_scope', 'dedup_key'] })
   await supabaseUpsert('invite_events', payload.inviteEvents, { onConflict: ['id'] })
   await supabaseUpsert('quit_events', payload.quitEvents, { onConflict: ['id'] })
   await supabaseUpsert('member_identity_bindings', payload.memberIdentityBindings, { onConflict: ['id'] })
   await supabaseUpsert('scan_logs', payload.scanLogs, { onConflict: ['id'] })
+
+  return {
+    activityTags: activityTags.length,
+    groupTagBindings: groupTagBindings.length,
+    rawEvents: payload.rawEvents?.length || 0,
+    inviteEvents: payload.inviteEvents.length,
+    quitEvents: payload.quitEvents.length,
+    memberIdentityBindings: payload.memberIdentityBindings.length,
+    scanLogs: payload.scanLogs.length
+  }
 }

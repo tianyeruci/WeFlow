@@ -5,6 +5,7 @@ import type { ActivityTag, DashboardData, MemberTraceData, MemberTraceRow } from
 
 type ViewKey = 'dashboard' | 'trace'
 type ChartMode = 'bar' | 'pie'
+const DASHBOARD_POLL_INTERVAL_MS = 10000
 
 const emptyDashboard: DashboardData = {
   cards: {
@@ -80,23 +81,30 @@ export default function RemoteViewerPage() {
     }
   }, [apiGet])
 
-  const loadDashboard = useCallback(async () => {
+  const loadDashboard = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
     if (!selectedTagId) return
     const params = new URLSearchParams({ tagId: selectedTagId })
     if (rankingGroupId) params.set('rankingGroupId', rankingGroupId)
     if (rankingStart) params.set('rankingStart', rankingStart)
     if (rankingEnd) params.set('rankingEnd', rankingEnd)
 
-    setLoading(true)
-    setError('')
+    if (!silent) {
+      setLoading(true)
+      setError('')
+    }
     try {
       const payload = await apiGet<{ dashboard: DashboardData }>(`/api/invite/dashboard?${params}`)
       setDashboard(payload.dashboard)
+      setError('')
     } catch (err) {
-      setDashboard(emptyDashboard)
+      if (!silent) {
+        setDashboard(emptyDashboard)
+      }
       setError(errorMessage(err))
     } finally {
-      setLoading(false)
+      if (!silent) {
+        setLoading(false)
+      }
     }
   }, [apiGet, rankingEnd, rankingGroupId, rankingStart, selectedTagId])
 
@@ -131,6 +139,16 @@ export default function RemoteViewerPage() {
   useEffect(() => {
     void loadDashboard()
   }, [loadDashboard])
+
+  useEffect(() => {
+    if (view !== 'dashboard' || !selectedTagId) return
+
+    const timer = window.setInterval(() => {
+      void loadDashboard({ silent: true })
+    }, DASHBOARD_POLL_INTERVAL_MS)
+
+    return () => window.clearInterval(timer)
+  }, [loadDashboard, selectedTagId, view])
 
   useEffect(() => {
     if (view === 'trace') void loadTrace()
@@ -186,6 +204,7 @@ export default function RemoteViewerPage() {
           <button className={view === 'dashboard' ? 'active' : ''} onClick={() => setView('dashboard')}>▥ 数据大屏</button>
           <button className={view === 'trace' ? 'active' : ''} onClick={() => setView('trace')}>♙ 群成员溯源</button>
         </nav>
+        <div className="topbar-spacer" aria-hidden="true" />
       </header>
 
       <main className="screen">

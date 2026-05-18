@@ -1,0 +1,16 @@
+
+> weflow-remote-viewer@0.1.0 dev
+> next dev
+
+▲ Next.js 16.2.6 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://198.18.0.1:3000
+- Environments: .env.local
+✓ Ready in 1411ms
+
+ GET / 200 in 1615ms (next.js: 752ms, application-code: 864ms)
+ GET /api/invite/tags 200 in 1493ms (next.js: 270ms, application-code: 1223ms)
+ GET / 200 in 81ms (next.js: 5ms, application-code: 77ms)
+ GET / 200 in 278ms (next.js: 40ms, application-code: 239ms)
+ GET /api/invite/tags 200 in 268ms (next.js: 11ms, application-code: 257ms)
+ GET /api/invite/dashboard?tagId=ffee9991-a271-4d78-a03a-70e9ae41b39a 404 in 1334ms (next.js: 1211ms, application-code: 123ms)
