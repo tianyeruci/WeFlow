@@ -534,5 +534,6 @@ function statusText(status: string) {
 function attributionText(attribution: string) {
   if (attribution === 'invalid') return '无效'
   if (attribution === 'pending') return '待确认'
+  if (attribution === 'none') return '-'
   return '有效'
 }

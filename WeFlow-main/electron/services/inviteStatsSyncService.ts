@@ -39,7 +39,7 @@ class InviteStatsSyncService {
         return { success: false, error: '未配置远端同步令牌，请提供 token 或设置 WEFLOW_INVITE_SYNC_TOKEN' }
       }
 
-      const payload = inviteStatsService.exportCurrentScopeSyncPayload({ dirtyOnly: true })
+      const payload = await inviteStatsService.exportCurrentScopeSyncPayload({ dirtyOnly: true })
       if (this.isPayloadEmpty(payload)) {
         return {
           success: true,

@@ -52,7 +52,7 @@ export type DashboardData = {
 }
 
 export type TraceStatus = 'active' | 'quit' | 'pending'
-export type TraceAttribution = 'valid' | 'invalid' | 'pending'
+export type TraceAttribution = 'valid' | 'invalid' | 'pending' | 'none'
 
 export type MemberTraceRow = {
   id: string

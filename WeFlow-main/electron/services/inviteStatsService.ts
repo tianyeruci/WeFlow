@@ -33,6 +33,7 @@ export interface InviteGroupTagBinding {
   tag_id: string
   tag_name: string
   enabled: boolean
+  member_count: number
   last_scan_time: number
   last_invite_time: number
   last_message_id: string
@@ -906,9 +907,11 @@ class InviteStatsService {
     return true
   }
 
-  private syncRawEventsFromMaterialized(data: InviteStatsScopeData): void {
-    for (const event of data.inviteEvents) this.upsertRawEventFromInvite(data, event)
-    for (const event of data.quitEvents) this.upsertRawEventFromQuit(data, event)
+  private syncRawEventsFromMaterialized(data: InviteStatsScopeData): boolean {
+    let changed = false
+    for (const event of data.inviteEvents) changed = this.upsertRawEventFromInvite(data, event) || changed
+    for (const event of data.quitEvents) changed = this.upsertRawEventFromQuit(data, event) || changed
+    return changed
   }
 
   private hasInviteEvent(data: InviteStatsScopeData, candidate: Partial<InviteEvent>): boolean {
@@ -968,8 +971,9 @@ class InviteStatsService {
     })
   }
 
-  private recomputeFlags(data: InviteStatsScopeData): void {
+  private recomputeFlags(data: InviteStatsScopeData): boolean {
     const nextFlags = new Map<string, number>()
+    let changed = false
     for (const event of data.inviteEvents) nextFlags.set(event.id, -1)
     const groupsByActivityUser = new Map<string, InviteEvent[]>()
     for (const event of data.inviteEvents) {
@@ -1003,9 +1007,10 @@ class InviteStatsService {
       if (event.valid_flag !== nextValidFlag) {
         event.valid_flag = nextValidFlag
         this.markSyncDirty(event)
+        changed = true
       }
     }
-    this.syncRawEventsFromMaterialized(data)
+    return this.syncRawEventsFromMaterialized(data) || changed
   }
 
   private applyQuitEventToInviteFlags(data: InviteStatsScopeData, quitEvent: QuitEvent): void {
@@ -1039,6 +1044,31 @@ class InviteStatsService {
       for (const group of result.data) map.set(group.username, group)
     }
     return map
+  }
+
+  private normalizeMemberCount(value: unknown): number {
+    return Math.max(0, Math.floor(Number(value || 0)))
+  }
+
+  private refreshBindingMemberCounts(data: InviteStatsScopeData, groups: GroupChatInfo[], now = this.nowSeconds()): boolean {
+    const countByGroupId = new Map(groups.map((group) => [group.username, this.normalizeMemberCount(group.memberCount)]))
+    let changed = false
+    for (const binding of data.groupTagBindings) {
+      const nextCount = countByGroupId.get(binding.group_id)
+      if (typeof nextCount !== 'number') continue
+      if (typeof binding.member_count !== 'number' || this.normalizeMemberCount(binding.member_count) !== nextCount) {
+        binding.member_count = nextCount
+        this.markSyncDirty(binding, now)
+        changed = true
+      }
+    }
+    return changed
+  }
+
+  private async refreshBindingMemberCountsFromSource(data: InviteStatsScopeData): Promise<boolean> {
+    const result = await groupAnalyticsService.getGroupChats()
+    if (!result.success || !result.data) return false
+    return this.refreshBindingMemberCounts(data, result.data)
   }
 
   private async getGroupContext(data: InviteStatsScopeData, binding: InviteGroupTagBinding): Promise<GroupContext> {
@@ -1271,10 +1301,11 @@ class InviteStatsService {
     }
   }
 
-  exportCurrentScopeSyncPayload(options: { dirtyOnly?: boolean } = {}): InviteRemoteSyncPayload {
+  async exportCurrentScopeSyncPayload(options: { dirtyOnly?: boolean } = {}): Promise<InviteRemoteSyncPayload> {
     const data = this.getScope()
-    this.recomputeFlags(data)
-    this.persist()
+    let changed = this.recomputeFlags(data)
+    changed = await this.refreshBindingMemberCountsFromSource(data) || changed
+    if (changed) this.persist()
     const accountScope = this.getCurrentScopeKey()
     const shouldInclude = (row: Record<string, any>) => !options.dirtyOnly || this.isSyncDirty(row)
 
@@ -1296,21 +1327,22 @@ class InviteStatsService {
       groupTagBindings: data.groupTagBindings
         .filter(shouldInclude)
         .map((binding) => ({
-        id: binding.id,
-        account_scope: accountScope,
-        group_id: binding.group_id,
-        group_name: binding.group_name,
-        activity_tag_id: binding.tag_id,
-        enabled: binding.enabled,
-        last_scan_at: this.toIsoTime(binding.last_scan_time),
-        last_invite_time: this.toIsoTime(binding.last_invite_time),
-        sync_status: binding.sync_status || '',
-        sync_error: binding.sync_error || '',
-        last_sync_at: this.toIsoTime(binding.last_sync_at),
-        created_at: this.toIsoTime(binding.created_at),
-        updated_at: this.toIsoTime(binding.updated_at),
-        raw_json: binding
-      })),
+          id: binding.id,
+          account_scope: accountScope,
+          group_id: binding.group_id,
+          group_name: binding.group_name,
+          activity_tag_id: binding.tag_id,
+          enabled: binding.enabled,
+          member_count: this.normalizeMemberCount(binding.member_count),
+          last_scan_at: this.toIsoTime(binding.last_scan_time),
+          last_invite_time: this.toIsoTime(binding.last_invite_time),
+          sync_status: binding.sync_status || '',
+          sync_error: binding.sync_error || '',
+          last_sync_at: this.toIsoTime(binding.last_sync_at),
+          created_at: this.toIsoTime(binding.created_at),
+          updated_at: this.toIsoTime(binding.updated_at),
+          raw_json: binding
+        })),
       rawEvents: data.rawEvents.filter(shouldInclude).map((event) => ({
         id: event.id,
         account_scope: accountScope,
@@ -1650,7 +1682,6 @@ class InviteStatsService {
   ): InviteStatsGroupRow[] {
     const bindingByGroupId = new Map(data.groupTagBindings.map((binding) => [binding.group_id, binding]))
     const tagById = new Map(data.activityTags.map((tag) => [tag.tag_id, tag]))
-    const activeMembersByGroupId = new Map<string, Set<string>>()
     const todayJoinByGroupId = new Map<string, Set<string>>()
     const todayQuitByGroupId = new Map<string, Set<string>>()
     const addMember = (map: Map<string, Set<string>>, groupId: string, memberKey: string) => {
@@ -1663,7 +1694,6 @@ class InviteStatsService {
     for (const event of data.inviteEvents) {
       if (event.status !== 'confirmed') continue
       const memberKey = this.getMemberKey(event)
-      if (event.delete_flag !== 1) addMember(activeMembersByGroupId, event.group_id, memberKey)
       if (event.invite_time >= todayStart && event.invite_time <= todayEnd) {
         addMember(todayJoinByGroupId, event.group_id, memberKey)
       }
@@ -1680,7 +1710,7 @@ class InviteStatsService {
         group_id: group.username,
         group_name: group.displayName || group.username,
         avatar_url: group.avatarUrl,
-        member_count: activeMembersByGroupId.get(group.username)?.size || 0,
+        member_count: this.normalizeMemberCount(group.memberCount),
         today_join_count: todayJoinByGroupId.get(group.username)?.size || 0,
         today_quit_count: todayQuitByGroupId.get(group.username)?.size || 0,
         recent_invite_time: binding?.last_invite_time || 0,
@@ -1701,7 +1731,9 @@ class InviteStatsService {
         return { success: false, error: groupsResult.error || '获取微信群失败' }
       }
       const todayStart = this.startOfTodaySeconds()
+      const changed = this.refreshBindingMemberCounts(data, groupsResult.data)
       const rows = this.buildGroupRows(data, groupsResult.data, todayStart, this.nowSeconds())
+      if (changed) this.persist()
       return { success: true, data: rows }
     } catch (error) {
       return { success: false, error: String(error) }
@@ -1719,7 +1751,9 @@ class InviteStatsService {
       if (!tag) return { success: false, error: '活动标签不存在' }
 
       const groupsMap = await this.getGroupsMap()
-      const groupName = groupsMap.get(normalizedGroupId)?.displayName || normalizedGroupId
+      const groupInfo = groupsMap.get(normalizedGroupId)
+      const groupName = groupInfo?.displayName || normalizedGroupId
+      const memberCount = this.normalizeMemberCount(groupInfo?.memberCount)
       const now = this.nowSeconds()
       const existing = data.groupTagBindings.find((item) => item.group_id === normalizedGroupId)
       if (existing) {
@@ -1728,6 +1762,7 @@ class InviteStatsService {
         existing.tag_id = tag.tag_id
         existing.tag_name = tag.tag_name
         existing.enabled = true
+        existing.member_count = memberCount
         this.markSyncDirty(existing, now)
         if (previousTagId !== tag.tag_id) {
           this.retagGroupMaterializedEvents(data, normalizedGroupId, tag, groupName)
@@ -1741,6 +1776,7 @@ class InviteStatsService {
           tag_id: tag.tag_id,
           tag_name: tag.tag_name,
           enabled: true,
+          member_count: memberCount,
           last_scan_time: 0,
           last_invite_time: 0,
           last_message_id: '',
@@ -1977,7 +2013,7 @@ class InviteStatsService {
   }): Promise<{ success: boolean; data?: any; error?: string }> {
     try {
       const data = this.getScope()
-      this.recomputeFlags(data)
+      let changed = this.recomputeFlags(data)
       const tagId = normalizeText(input.tagId)
       const tag = data.activityTags.find((item) => item.tag_id === tagId)
       if (!tag) return { success: false, error: '活动标签不存在' }
@@ -1994,7 +2030,10 @@ class InviteStatsService {
 
       const groupsResult = await groupAnalyticsService.getGroupChats()
       const groupRows = groupsResult.success && groupsResult.data
-        ? this.buildGroupRows(data, groupsResult.data, todayStart, todayEnd).filter((row) => bindingGroupIds.has(row.group_id))
+        ? (() => {
+            changed = this.refreshBindingMemberCounts(data, groupsResult.data) || changed
+            return this.buildGroupRows(data, groupsResult.data, todayStart, todayEnd).filter((row) => bindingGroupIds.has(row.group_id))
+          })()
         : []
       const activeMemberCount = new Set(effective
         .filter((event) => event.delete_flag !== 1)
@@ -2042,6 +2081,7 @@ class InviteStatsService {
         tagId,
         includeQuit: true
       }).slice(0, 20)
+      if (changed) this.persist()
 
       return {
         success: true,
@@ -2147,8 +2187,8 @@ class InviteStatsService {
         if (statusFilter === 'active' && (row.event_type !== 'invite' || row.status !== 'confirmed' || row.delete_flag === 1)) return false
         if (statusFilter === 'quit' && row.delete_flag !== 1 && row.event_type !== 'quit') return false
         if (statusFilter === 'pending' && row.status !== 'pending') return false
-        if (attributionFilter === 'valid' && row.valid_flag !== 1) return false
-        if (attributionFilter === 'invalid' && row.valid_flag !== -1) return false
+        if (attributionFilter === 'valid' && (row.event_type !== 'invite' || row.status !== 'confirmed' || row.valid_flag !== 1)) return false
+        if (attributionFilter === 'invalid' && (row.event_type !== 'invite' || row.status !== 'confirmed' || row.valid_flag !== -1)) return false
         if (attributionFilter === 'pending' && row.status !== 'pending') return false
         if (keyword) {
           const fields = [row.user, row.wx_id, row.inviter, row.inviter_wx_id, row.group_name, row.group_id]
@@ -2170,6 +2210,7 @@ class InviteStatsService {
   async getMemberTrace(filters: MemberTraceFilters): Promise<{ success: boolean; data?: { rows: MemberTraceRow[]; total: number }; error?: string }> {
     try {
       const data = this.getScope()
+      if (this.recomputeFlags(data)) this.persist()
       const offset = Math.max(0, Number(filters.offset || 0))
       const limit = Math.min(500, Math.max(1, Number(filters.limit || 100)))
       const rows = this.buildMemberTraceRows(data, filters)
@@ -2182,6 +2223,7 @@ class InviteStatsService {
   async listPending(filters: { tagId?: string } = {}): Promise<{ success: boolean; data?: MemberTraceRow[]; error?: string }> {
     try {
       const data = this.getScope()
+      if (this.recomputeFlags(data)) this.persist()
       const rows = this.buildMemberTraceRows(data, {
         tagId: filters.tagId,
         includeQuit: true,
@@ -2291,6 +2333,7 @@ class InviteStatsService {
   async exportMemberTrace(payload: MemberTraceFilters & { filePath: string; format?: ExportFormat }): Promise<{ success: boolean; count?: number; error?: string }> {
     try {
       const data = this.getScope()
+      if (this.recomputeFlags(data)) this.persist()
       const rows = this.buildMemberTraceRows(data, payload)
       const headers = ['事件类型', '活动标签', '成员昵称', '成员 wxid', '邀请者', '邀请者 wxid', '所在群', '群 ID', '时间', '状态', '是否有效', '类型']
       const body = rows.map((row) => [
@@ -2304,7 +2347,7 @@ class InviteStatsService {
         row.group_id,
         this.formatTime(row.event_time),
         row.status !== 'confirmed' ? '待确认' : (row.event_type === 'quit' || row.delete_flag === 1 ? '已退出群' : '未退出群'),
-        row.valid_flag === 1 ? '有效' : row.valid_flag === -1 ? '无效' : row.status,
+        row.status !== 'confirmed' ? '待确认' : row.event_type !== 'invite' ? '-' : row.valid_flag === 1 ? '有效' : row.valid_flag === -1 ? '无效' : '-',
         row.join_type || row.quit_type
       ])
       const format = this.normalizeExportFormat(payload.filePath, payload.format)

@@ -129,6 +129,14 @@ const traceStatusClass = (row: InviteMemberTraceRow): string => {
   return 'active'
 }
 
+const traceAttributionLabel = (row: InviteMemberTraceRow): string => {
+  if (row.status !== 'confirmed') return '待确认'
+  if (row.event_type !== 'invite') return '-'
+  if (row.valid_flag === 1) return '有效'
+  if (row.valid_flag === -1) return '无效'
+  return '-'
+}
+
 const inferExportFormat = (filePath: string): 'csv' | 'xlsx' => {
   return filePath.toLowerCase().endsWith('.csv') ? 'csv' : 'xlsx'
 }
@@ -1157,7 +1165,7 @@ function InviteStatsPage() {
                     <td>{row.group_name}</td>
                     <td>{formatTime(row.event_time)}</td>
                     <td><span className={`invite-pill ${traceStatusClass(row)}`}>{traceStatusLabel(row)}</span></td>
-                    <td>{row.valid_flag === 1 ? '有效' : row.valid_flag === -1 ? '无效' : '-'}</td>
+                    <td>{traceAttributionLabel(row)}</td>
                     <td className="invite-raw-cell" title={row.raw_content} onDoubleClick={() => setRawPreview(row)}>
                       <span>{row.raw_content}</span>
                       {row.raw_content && <button type="button" onClick={() => setRawPreview(row)}>查看</button>}

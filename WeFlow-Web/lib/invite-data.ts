@@ -41,6 +41,14 @@ type FinalStatEvent = {
   source_raw_content?: string
 }
 
+type GroupTagBinding = {
+  group_id?: string
+  group_name?: string
+  activity_tag_id?: string
+  enabled?: boolean
+  member_count?: number | null
+}
+
 type DashboardFilters = {
   tagId?: string
   rankingGroupId?: string
@@ -71,13 +79,15 @@ export async function listActivityTags(): Promise<ActivityTag[]> {
 }
 
 export async function getDashboard(filters: DashboardFilters): Promise<DashboardData> {
-  const events = await loadFinalEvents(filters.tagId)
+  const [events, groupBindings] = await Promise.all([
+    loadFinalEvents(filters.tagId),
+    loadGroupBindings(filters.tagId)
+  ])
   const confirmedEvents = events.filter(isConfirmedStatEvent)
   const inviteEvents = confirmedEvents.filter(isInviteEvent)
   const effectiveInviteEvents = inviteEvents.filter(isEffectiveInviteEvent)
-  const activeInviteEvents = inviteEvents.filter(row => row.delete_flag !== 1)
   const quitEvents = confirmedEvents.filter(isQuitEvent)
-  const groups = buildGroups(confirmedEvents)
+  const groups = buildGroupsFromBindings(groupBindings)
   const rankingEvents = effectiveInviteEvents.filter(row => {
     if (filters.rankingGroupId && String(row.group_id || '') !== filters.rankingGroupId) return false
     return withinRange(row.invite_time, filters.rankingStart, filters.rankingEnd)
@@ -96,7 +106,7 @@ export async function getDashboard(filters: DashboardFilters): Promise<Dashboard
     groups,
     hourlyDistribution: buildHourlyDistribution(effectiveInviteEvents),
     inviteRanking: buildInviteRanking(rankingEvents),
-    groupRanking: buildGroupRanking(activeInviteEvents),
+    groupRanking: buildGroupRanking(groupBindings),
     recentActivities: confirmedEvents
       .slice()
       .sort((a, b) => timeValue(eventTime(b)) - timeValue(eventTime(a)))
@@ -114,7 +124,7 @@ export async function getDashboard(filters: DashboardFilters): Promise<Dashboard
 
 export async function getMemberTrace(filters: TraceFilters): Promise<MemberTraceData> {
   const events = await loadFinalEvents(filters.tagId)
-  const groups = buildGroups(events)
+  const groups = buildGroupsFromEvents(events)
   const keyword = (filters.keyword || '').trim().toLowerCase()
 
   const rows = events
@@ -172,6 +182,18 @@ async function loadFinalEvents(tagId?: string) {
   return supabaseSelect<FinalStatEvent>('final_stat_events', query)
 }
 
+async function loadGroupBindings(tagId?: string) {
+  const query: Record<string, string | number> = {
+    select: 'group_id,group_name,activity_tag_id,enabled,member_count',
+    enabled: 'eq.true',
+    limit: 10000
+  }
+
+  if (tagId) query.activity_tag_id = `eq.${tagId}`
+
+  return supabaseSelect<GroupTagBinding>('group_tag_bindings', query)
+}
+
 function isConfirmedStatEvent(row: FinalStatEvent) {
   return row.status !== 'pending' && row.status !== 'ignored'
 }
@@ -192,12 +214,22 @@ function isVisibleForTrace(row: FinalStatEvent) {
   return row.status !== 'ignored'
 }
 
-function buildGroups(events: FinalStatEvent[]): GroupOption[] {
+function buildGroupsFromEvents(events: FinalStatEvent[]): GroupOption[] {
   const groups = new Map<string, GroupOption>()
   events.forEach(row => {
     const id = String(row.group_id || row.group_name || '')
     if (!id) return
     groups.set(id, { id, name: groupName(row) })
+  })
+  return Array.from(groups.values()).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
+}
+
+function buildGroupsFromBindings(bindings: GroupTagBinding[]): GroupOption[] {
+  const groups = new Map<string, GroupOption>()
+  bindings.forEach(row => {
+    const id = String(row.group_id || row.group_name || '')
+    if (!id) return
+    groups.set(id, { id, name: bindingGroupName(row) })
   })
   return Array.from(groups.values()).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
 }
@@ -227,18 +259,18 @@ function buildInviteRanking(events: FinalStatEvent[]): InviteRankingRow[] {
     .sort((a, b) => b.count - a.count)
 }
 
-function buildGroupRanking(events: FinalStatEvent[]) {
-  const groups = new Map<string, Set<string>>()
-  const names = new Map<string, string>()
-  events.forEach(row => {
+function buildGroupRanking(bindings: GroupTagBinding[]) {
+  const groups = new Map<string, { groupName: string; count: number }>()
+  bindings.forEach(row => {
     const id = String(row.group_id || row.group_name || '')
     if (!id) return
-    if (!groups.has(id)) groups.set(id, new Set())
-    groups.get(id)?.add(memberKey(row))
-    names.set(id, groupName(row))
+    groups.set(id, {
+      groupName: bindingGroupName(row),
+      count: normalizeCount(row.member_count)
+    })
   })
   return Array.from(groups.entries())
-    .map(([groupId, members]) => ({ groupId, groupName: names.get(groupId) || groupId, count: members.size }))
+    .map(([groupId, group]) => ({ groupId, groupName: group.groupName, count: group.count }))
     .sort((a, b) => b.count - a.count)
 }
 
@@ -272,6 +304,14 @@ function groupName(row: FinalStatEvent) {
   return String(row.group_name || row.group_id || '未知群')
 }
 
+function bindingGroupName(row: GroupTagBinding) {
+  return String(row.group_name || row.group_id || '未知群')
+}
+
+function normalizeCount(value: unknown) {
+  return Math.max(0, Math.floor(Number(value || 0)))
+}
+
 function toMemberTraceRow(row: FinalStatEvent): MemberTraceRow {
   const status = toTraceStatus(row)
   const attribution = toTraceAttribution(row)
@@ -300,6 +340,7 @@ function toTraceStatus(row: FinalStatEvent): TraceStatus {
 
 function toTraceAttribution(row: FinalStatEvent): TraceAttribution {
   if (row.status === 'pending') return 'pending'
+  if (!isInviteEvent(row)) return 'none'
   if (row.valid_flag === -1) return 'invalid'
   return 'valid'
 }
@@ -368,5 +409,6 @@ function statusText(status: TraceStatus) {
 function attributionText(attribution: TraceAttribution) {
   if (attribution === 'invalid') return '无效'
   if (attribution === 'pending') return '待确认'
+  if (attribution === 'none') return '-'
   return '有效'
 }

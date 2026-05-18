@@ -18,6 +18,7 @@ type GroupTagBindingRow = {
   group_name: string
   activity_tag_id: string
   enabled: boolean
+  member_count: number | null
   last_scan_at: string | null
   last_invite_time: string | null
   created_at: string | null
