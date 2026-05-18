@@ -291,6 +291,10 @@ export interface InviteMemberTraceFilters {
 }
 
 export interface ElectronAPI {
+  process: {
+    platform: string
+    arch: string
+  }
   window: {
     minimize: () => void
     maximize: () => void
@@ -1109,10 +1113,16 @@ export interface ElectronAPI {
       count?: number
       error?: string
     }>
+    getRemoteSyncConfig: () => Promise<{ endpoint: string; token: string }>
     syncRemote: (options?: { endpoint?: string; token?: string }) => Promise<{
       success: boolean
       accountScope?: string
       counts?: Record<string, number>
+      error?: string
+    }>
+    resetAllData: (options?: { endpoint?: string; token?: string }) => Promise<{
+      success: boolean
+      remoteTables?: string[]
       error?: string
     }>
   }

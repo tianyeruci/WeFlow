@@ -467,7 +467,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     exportInviteRanking: (payload: any) => ipcRenderer.invoke('inviteStats:exportInviteRanking', payload),
     exportMemberTrace: (payload: any) => ipcRenderer.invoke('inviteStats:exportMemberTrace', payload),
     exportRawEvents: (payload: any) => ipcRenderer.invoke('inviteStats:exportRawEvents', payload),
-    syncRemote: (options?: { endpoint?: string; token?: string }) => ipcRenderer.invoke('inviteStats:syncRemote', options)
+    getRemoteSyncConfig: () => ipcRenderer.invoke('inviteStats:getRemoteSyncConfig'),
+    syncRemote: (options?: { endpoint?: string; token?: string }) => ipcRenderer.invoke('inviteStats:syncRemote', options),
+    resetAllData: (options?: { endpoint?: string; token?: string }) => ipcRenderer.invoke('inviteStats:resetAllData', options)
   },
 
   // 年度报告

@@ -49,9 +49,10 @@ const tabs: { id: Exclude<SettingsTab, 'insight' | 'aiFootprint'>; label: string
   { id: 'about', label: '关于', icon: Info }
 ]
 
+const electronProcess = window.electronAPI?.process
 const filteredTabs = tabs.filter(tab => {
   if (tab.id === 'autoDownload') {
-    return (window as any).electronAPI.process.platform === 'win32' && (window as any).electronAPI.process.arch === 'x64'
+    return electronProcess?.platform === 'win32' && electronProcess?.arch === 'x64'
   }
   return true
 })
@@ -5159,7 +5160,6 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
 }
 
 export default SettingsPage
-
 
 
 
