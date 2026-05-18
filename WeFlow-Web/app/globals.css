@@ -218,6 +218,7 @@ textarea:focus {
 }
 
 .error-banner,
+.notice-banner,
 .loading-line {
   margin-bottom: 14px;
   padding: 12px 14px;
@@ -236,6 +237,12 @@ textarea:focus {
   border: 1px solid #d5e4ff;
   background: #f0f6ff;
   color: #265fae;
+}
+
+.notice-banner {
+  border: 1px solid #c7eadf;
+  background: #eefbf6;
+  color: #0f766e;
 }
 
 .view {

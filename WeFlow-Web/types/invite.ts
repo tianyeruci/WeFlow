@@ -26,8 +26,10 @@ export type HourlyDistributionRow = {
 }
 
 export type RecentActivity = {
+  eventType: 'invite' | 'quit'
   memberName: string
-  inviterName: string
+  sourceName: string
+  sourceLabel: string
   groupName: string
   time: string | null
 }
@@ -39,6 +41,7 @@ export type DashboardData = {
     totalMembers: number
     totalMembersWithQuit: number
     todayNew: number
+    todayQuit: number
     pendingCount: number
   }
   groups: GroupOption[]

@@ -1074,7 +1074,7 @@ export interface ElectronAPI {
     listGroups: () => Promise<InviteStatsResult<InviteStatsGroupRow[]>>
     setGroupTag: (groupId: string, tagId: string) => Promise<InviteStatsResult>
     clearGroupTag: (groupId: string) => Promise<InviteStatsResult>
-    scanActivity: (tagId: string) => Promise<{ success: boolean; log?: InviteScanLog; error?: string }>
+    scanActivity: (tagId: string) => Promise<{ success: boolean; started?: boolean; running?: boolean; log?: InviteScanLog; error?: string }>
     getScanStatus: () => Promise<InviteStatsResult<{ running: boolean; active?: any; logs: InviteScanLog[] }>>
     getDashboard: (input: {
       tagId: string

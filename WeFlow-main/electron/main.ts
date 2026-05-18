@@ -4298,7 +4298,6 @@ app.whenReady().then(async () => {
   })
   messagePushService.start()
   insightService.start()
-  inviteStatsService.setAfterScanSuccessCallback(() => inviteStatsSyncService.queueSync())
   inviteStatsService.startAutoScanScheduler()
   inviteStatsSyncService.startAutoSyncScheduler()
   void inviteStatsSyncService.queueSync()

@@ -23,7 +23,7 @@ class InviteStatsSyncService {
   private readonly configService = ConfigService.getInstance()
   private syncPromise: Promise<InviteStatsRemoteSyncResult> | null = null
   private autoSyncTimer: ReturnType<typeof setInterval> | null = null
-  private readonly autoSyncIntervalMs = 5 * 60 * 1000
+  private readonly autoSyncIntervalMs = 3 * 60 * 1000
   private readonly maxBatchPayloadBytes = 900 * 1024
 
   async syncCurrentScope(options: InviteStatsRemoteSyncOptions = {}): Promise<InviteStatsRemoteSyncResult> {
