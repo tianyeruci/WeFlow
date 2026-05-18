@@ -8,6 +8,7 @@ import {
   TraceAttribution,
   TraceStatus
 } from '@/types/invite'
+import { csvText } from './csv'
 import { supabaseSelect } from './supabase-rest'
 
 type AnyRecord = Record<string, unknown>
@@ -65,6 +66,20 @@ type TraceFilters = {
   status?: string
   attribution?: string
   includeQuit?: boolean
+}
+
+type GroupReleaseFilters = {
+  tagId?: string
+  includeQuit?: boolean
+}
+
+type GroupMemberExportFilters = GroupReleaseFilters & {
+  groupId: string
+}
+
+type GroupExportFile = {
+  filename: string
+  content: string
 }
 
 export async function listActivityTags(): Promise<ActivityTag[]> {
@@ -169,6 +184,61 @@ export async function getMemberTraceExportRows(filters: TraceFilters) {
     attributionText(row.attribution),
     row.rawContent
   ])
+}
+
+export async function getGroupSummaryExportRows(filters: GroupReleaseFilters) {
+  const dashboard = await getDashboard({ tagId: filters.tagId })
+  const memberTotal = filters.includeQuit ? dashboard.cards.totalMembersWithQuit : dashboard.cards.totalMembers
+
+  return [[
+    '当前活动',
+    dashboard.cards.monitoredGroups,
+    memberTotal,
+    filters.includeQuit ? '包含已退群的人' : '仅有效入群人数'
+  ]]
+}
+
+export async function getGroupListExportRows(filters: GroupReleaseFilters) {
+  const dashboard = await getDashboard({ tagId: filters.tagId })
+  const counts = new Map(dashboard.groupRanking.map(row => [row.groupId, row.count]))
+
+  return dashboard.groups.map(group => [
+    group.name,
+    group.id,
+    counts.get(group.id) || 0
+  ])
+}
+
+export async function getGroupMemberExportRows(filters: GroupMemberExportFilters) {
+  const events = await loadFinalEvents(filters.tagId)
+  return buildGroupMemberCsvRows(events, filters.groupId)
+}
+
+export async function getBatchGroupMemberExportFiles(filters: GroupReleaseFilters) {
+  const [events, groupBindings] = await Promise.all([
+    loadFinalEvents(filters.tagId),
+    loadGroupBindings(filters.tagId)
+  ])
+  const groups = buildGroupsFromBindings(groupBindings)
+  const groupedEvents = new Map<string, FinalStatEvent[]>()
+
+  events
+    .filter(isConfirmedStatEvent)
+    .forEach(row => {
+      const groupId = String(row.group_id || row.group_name || '')
+      if (!groupId) return
+      const current = groupedEvents.get(groupId) || []
+      current.push(row)
+      groupedEvents.set(groupId, current)
+    })
+
+  return groups.map(group => ({
+    filename: `${sanitizeFilename(group.name)}.csv`,
+    content: csvText(
+      ['时间', '邀请人', '被邀请人', '状态'],
+      buildGroupMemberCsvRows(groupedEvents.get(group.id) || [], group.id)
+    )
+  }))
 }
 
 async function loadFinalEvents(tagId?: string) {
@@ -411,4 +481,36 @@ function attributionText(attribution: TraceAttribution) {
   if (attribution === 'pending') return '待确认'
   if (attribution === 'none') return '-'
   return '有效'
+}
+
+function buildGroupMemberCsvRows(events: FinalStatEvent[], groupId: string) {
+  return events
+    .filter(row => String(row.group_id || row.group_name || '') === groupId)
+    .filter(isConfirmedStatEvent)
+    .sort((a, b) => timeValue(b.invite_time || b.exit_time || b.created_time) - timeValue(a.invite_time || a.exit_time || a.created_time))
+    .map(row => [
+      formatDateTime(row.invite_time || row.exit_time || row.created_time),
+      groupMemberSourceName(row),
+      memberName(row),
+      groupMemberStatusText(row)
+    ])
+}
+
+function groupMemberSourceName(row: FinalStatEvent) {
+  if (isQuitEvent(row)) return operatorName(row)
+  return inviterName(row)
+}
+
+function groupMemberStatusText(row: FinalStatEvent) {
+  if (isQuitEvent(row)) return quitTypeText(row.quit_type)
+  if (row.join_type === 'qrcode') return '扫码入群'
+  if (row.join_type === 'direct') return '直接入群'
+  return '邀请入群'
+}
+
+function sanitizeFilename(value: string) {
+  return value
+    .replace(/[\\/:*?"<>|]+/g, '-')
+    .replace(/[\u0000-\u001f]/g, '')
+    .trim() || 'download'
 }

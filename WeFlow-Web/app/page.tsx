@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ActivityTag, DashboardData, MemberTraceData, MemberTraceRow } from '@/types/invite'
 
-type ViewKey = 'dashboard' | 'trace'
+type ViewKey = 'dashboard' | 'groups' | 'trace'
 type ChartMode = 'bar' | 'pie'
 const DASHBOARD_POLL_INTERVAL_MS = 10000
 
@@ -49,6 +49,7 @@ export default function RemoteViewerPage() {
   const [traceAttribution, setTraceAttribution] = useState('')
   const [rawMessage, setRawMessage] = useState('')
   const [loading, setLoading] = useState(false)
+  const [exportingAction, setExportingAction] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
@@ -141,7 +142,7 @@ export default function RemoteViewerPage() {
   }, [loadDashboard])
 
   useEffect(() => {
-    if (view !== 'dashboard' || !selectedTagId) return
+    if ((view !== 'dashboard' && view !== 'groups') || !selectedTagId) return
 
     const timer = window.setInterval(() => {
       void loadDashboard({ silent: true })
@@ -158,6 +159,8 @@ export default function RemoteViewerPage() {
     if (!selectedTagId) return
     const params = new URLSearchParams({ tagId: selectedTagId })
     let endpoint = '/api/invite/export/ranking'
+    let filename = '邀请排行榜.csv'
+    let actionKey = 'ranking'
 
     if (type === 'ranking') {
       if (rankingGroupId) params.set('rankingGroupId', rankingGroupId)
@@ -165,6 +168,8 @@ export default function RemoteViewerPage() {
       if (rankingEnd) params.set('rankingEnd', rankingEnd)
     } else {
       endpoint = '/api/invite/export/member-trace'
+      filename = '群成员溯源.csv'
+      actionKey = 'trace'
       if (traceGroupId) params.set('groupId', traceGroupId)
       if (traceKeyword.trim()) params.set('keyword', traceKeyword.trim())
       if (traceStart) params.set('startTime', traceStart)
@@ -173,24 +178,71 @@ export default function RemoteViewerPage() {
       if (traceAttribution) params.set('attribution', traceAttribution)
     }
 
-    const response = await fetch(`${endpoint}?${params}`)
-    if (!response.ok) {
-      setError('导出失败，请检查远程数据配置')
-      return
+    await downloadExport(endpoint, params, filename, actionKey)
+  }
+
+  async function exportGroups(mode: 'summary' | 'list' | 'batch' | 'member', group?: { groupId: string; groupName: string }) {
+    if (!selectedTagId) return
+    const params = new URLSearchParams({ tagId: selectedTagId, mode })
+    let filename = '发售群列表.csv'
+    let actionKey = `groups:${mode}`
+
+    if (mode === 'summary') {
+      params.set('includeQuit', String(includeQuitInTotal))
+      filename = '发售群人数汇总.csv'
+    } else if (mode === 'batch') {
+      filename = '发售群员批量.zip'
+    } else if (mode === 'member' && group) {
+      params.set('groupId', group.groupId)
+      params.set('groupName', group.groupName)
+      filename = `${sanitizeDownloadFilename(group.groupName)}.csv`
+      actionKey = `groups:member:${group.groupId}`
     }
-    const blob = await response.blob()
+
+    await downloadExport('/api/invite/export/groups', params, filename, actionKey)
+  }
+
+  async function downloadExport(endpoint: string, params: URLSearchParams, filename: string, actionKey: string) {
+    setExportingAction(actionKey)
+    setError('')
+    try {
+      const response = await fetch(`${endpoint}?${params}`)
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}))
+        throw new Error(payload.error || '导出失败，请检查远程数据配置')
+      }
+      const blob = await response.blob()
+      triggerDownload(blob, filename)
+      showNotice('下载已开始')
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setExportingAction('')
+    }
+  }
+
+  function triggerDownload(blob: Blob, filename: string) {
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = type === 'ranking' ? '邀请排行榜.csv' : '群成员溯源.csv'
+    link.download = filename
     link.click()
-    URL.revokeObjectURL(url)
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
 
   const memberTotal = includeQuitInTotal ? dashboard.cards.totalMembersWithQuit : dashboard.cards.totalMembers
   const rankingMax = Math.max(...dashboard.inviteRanking.map(row => row.count), 1)
   const groupMax = Math.max(...dashboard.groupRanking.map(row => row.count), 1)
   const chartPoints = buildLinePoints(dashboard.hourlyDistribution)
+  const groupRows = useMemo(() => {
+    const counts = new Map(dashboard.groupRanking.map(row => [row.groupId, row.count]))
+    return dashboard.groups.map((group, index) => ({
+      index: index + 1,
+      groupId: group.id,
+      groupName: group.name,
+      count: counts.get(group.id) || 0
+    }))
+  }, [dashboard.groupRanking, dashboard.groups])
 
   async function copyRawMessage() {
     if (!rawMessage.trim()) {
@@ -213,15 +265,11 @@ export default function RemoteViewerPage() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="brand">
-          <strong>WeFlow 邀请统计</strong>
-          <span>远程用户大屏</span>
-        </div>
         <nav className="screen-nav" aria-label="远程用户视图">
           <button className={view === 'dashboard' ? 'active' : ''} onClick={() => setView('dashboard')}>▥ 数据大屏</button>
+          <button className={view === 'groups' ? 'active' : ''} onClick={() => setView('groups')}>▣ 发售群列表</button>
           <button className={view === 'trace' ? 'active' : ''} onClick={() => setView('trace')}>♙ 群成员溯源</button>
         </nav>
-        <div className="topbar-spacer" aria-hidden="true" />
       </header>
 
       <main className="screen">
@@ -361,6 +409,87 @@ export default function RemoteViewerPage() {
                       {dashboard.recentActivities.length === 0 && <EmptyState text="暂无动态" />}
                     </div>
                   </section>
+                </section>
+              </section>
+            )}
+
+            {view === 'groups' && (
+              <section className="view active">
+                <section className="panel table-panel groups-panel">
+                  <div className="groups-head">
+                    <div className="trace-title">
+                      <h2>发售群列表</h2>
+                      <p>【{selectedTag?.name || '当前活动'}】共 {formatNumber(groupRows.length)} 个群，{formatNumber(memberTotal)} 人</p>
+                    </div>
+                    <div className="groups-summary">
+                      <label className="check">
+                        <input
+                          type="checkbox"
+                          checked={includeQuitInTotal}
+                          onChange={event => setIncludeQuitInTotal(event.target.checked)}
+                        />
+                        包含已退群的人
+                      </label>
+                      <span className="groups-total">共 {formatNumber(groupRows.length)} 个群，{formatNumber(memberTotal)} 人</span>
+                    </div>
+                  </div>
+                  <div className="groups-actions">
+                    <button
+                      className="groups-action primary"
+                      disabled={Boolean(exportingAction)}
+                      onClick={() => void exportGroups('summary')}
+                    >
+                      {exportingAction === 'groups:summary' ? '导出中...' : '合计导出群人数'}
+                    </button>
+                    <button
+                      className="groups-action success"
+                      disabled={Boolean(exportingAction)}
+                      onClick={() => void exportGroups('batch')}
+                    >
+                      {exportingAction === 'groups:batch' ? '导出中...' : '批量导出所有群员'}
+                    </button>
+                    <button
+                      className="groups-action neutral"
+                      disabled={Boolean(exportingAction)}
+                      onClick={() => void exportGroups('list')}
+                    >
+                      {exportingAction === 'groups:list' ? '导出中...' : '合计导出群列表'}
+                    </button>
+                  </div>
+                  <div className="table-wrap groups-table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>序号</th>
+                          <th>群名称</th>
+                          <th>人数</th>
+                          <th>操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {groupRows.map(row => (
+                          <tr key={row.groupId}>
+                            <td>{row.index}</td>
+                            <td>
+                              <span className="member-name">{row.groupName}</span>
+                              <span className="wxid">{row.groupId}</span>
+                            </td>
+                            <td>{formatNumber(row.count)}</td>
+                            <td>
+                              <button
+                                className="row-export"
+                                disabled={Boolean(exportingAction)}
+                                onClick={() => void exportGroups('member', { groupId: row.groupId, groupName: row.groupName })}
+                              >
+                                {exportingAction === `groups:member:${row.groupId}` ? '导出中...' : '导出群员'}
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {groupRows.length === 0 && <EmptyState text="暂无发售群数据" />}
+                  </div>
                 </section>
               </section>
             )}
@@ -536,4 +665,11 @@ function attributionText(attribution: string) {
   if (attribution === 'pending') return '待确认'
   if (attribution === 'none') return '-'
   return '有效'
+}
+
+function sanitizeDownloadFilename(value: string) {
+  return value
+    .replace(/[\\/:*?"<>|]+/g, '-')
+    .replace(/[\u0000-\u001f]/g, '')
+    .trim() || 'download'
 }

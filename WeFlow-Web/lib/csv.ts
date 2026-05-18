@@ -1,9 +1,13 @@
-export function csvResponse(filename: string, headers: string[], rows: Array<Array<string | number | null | undefined>>) {
+export function csvText(headers: string[], rows: Array<Array<string | number | null | undefined>>) {
   const lines = [
     headers.map(escapeCsv).join(','),
     ...rows.map(row => row.map(escapeCsv).join(','))
   ]
-  const body = `\uFEFF${lines.join('\n')}`
+  return `\uFEFF${lines.join('\n')}`
+}
+
+export function csvResponse(filename: string, headers: string[], rows: Array<Array<string | number | null | undefined>>) {
+  const body = csvText(headers, rows)
 
   return new Response(body, {
     headers: {
