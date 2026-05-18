@@ -306,11 +306,22 @@ function InviteStatsPage() {
       showToast('暂无可复制内容')
       return
     }
+
     try {
       await navigator.clipboard.writeText(text)
       showToast('原始消息已复制')
     } catch {
-      showToast('复制失败，请手动选择文本复制')
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.setAttribute('readonly', 'true')
+      textarea.style.position = 'fixed'
+      textarea.style.top = '-9999px'
+      textarea.style.left = '-9999px'
+      document.body.appendChild(textarea)
+      textarea.select()
+      const copied = document.execCommand('copy')
+      document.body.removeChild(textarea)
+      showToast(copied ? '原始消息已复制' : '复制失败，请手动选择文本复制')
     }
   }
 
@@ -1352,7 +1363,6 @@ function InviteStatsPage() {
             <div className="invite-modal-title">
               <div>
                 <h2>完整原始消息</h2>
-                <p>{rawPreview.group_name} · {formatTime(rawPreview.event_time)}</p>
               </div>
               <div className="invite-modal-title-actions">
                 <button type="button" onClick={() => void copyRawPreview()} title="复制原始消息">
@@ -1363,7 +1373,7 @@ function InviteStatsPage() {
                 </button>
               </div>
             </div>
-            <pre>{rawPreview.raw_content || '无原始消息'}</pre>
+            <textarea className="invite-raw-content" value={rawPreview.raw_content || '无原始消息'} readOnly />
           </div>
         </div>
       )}

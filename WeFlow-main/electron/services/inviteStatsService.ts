@@ -476,66 +476,93 @@ class InviteStatsService {
     return text
   }
 
-  private parseSystemEvent(text: string): ParsedSystemEvent | null {
+  private splitInvitedUsers(text: string): string[] {
+    const users: string[] = []
+    let rest = normalizeText(text)
+      .replace(/[“”]/g, '"')
+      .replace(/[‘’]/g, "'")
+
+    const addUser = (value: string): void => {
+      const user = normalizeText(value).replace(/^["']+|["']+$/g, '').trim()
+      if (user) users.push(user)
+    }
+
+    const currentUserPrefix = /^["']?你["']?和/.exec(rest)
+    if (currentUserPrefix) {
+      users.push('你')
+      rest = rest.slice(currentUserPrefix[0].length)
+    }
+
+    rest
+      .replace(/^["']+|["']+$/g, '')
+      .split(/[、,，]/)
+      .forEach(addUser)
+
+    return users
+  }
+
+  private parseSystemEvents(text: string): ParsedSystemEvent[] {
     const normalized = normalizeText(text)
       .replace(/[。.!！]+$/g, '')
       .replace(/\s+/g, ' ')
-    if (!normalized) return null
+    if (!normalized) return []
 
     const qrcode = /^["']?(.+?)["']?通过扫描["']?(.+?)["']?分享的二维码加入(?:了)?群聊$/.exec(normalized)
     if (qrcode) {
-      return {
+      return [{
         type: 'join',
         joinType: 'qrcode',
         user: normalizeText(qrcode[1]),
         inviter: normalizeText(qrcode[2]) || '未知来源',
         confidence: 0.94
-      }
+      }]
     }
 
     const invite = /^["']?(.+?)["']?邀请["']?(.+?)["']?加入(?:了)?群聊$/.exec(normalized)
     if (invite) {
-      return {
+      const inviter = normalizeText(invite[1])
+      const users = this.splitInvitedUsers(invite[2])
+      return users.map((user) => ({
         type: 'join',
         joinType: 'invite',
-        inviter: normalizeText(invite[1]),
-        user: normalizeText(invite[2]),
+        inviter,
+        user,
         confidence: 0.96
-      }
+      }))
     }
 
     const removed = /^["']?(.+?)["']?被["']?(.+?)["']?移出(?:了)?群聊$/.exec(normalized)
     if (removed) {
-      return {
+      return [{
         type: 'quit',
         quitType: 'removed',
         user: normalizeText(removed[1]),
         operator: normalizeText(removed[2]),
         confidence: 0.94
-      }
+      }]
     }
 
     const quit = /^["']?(.+?)["']?退出(?:了)?群聊$/.exec(normalized)
     if (quit) {
-      return {
+      return [{
         type: 'quit',
         quitType: 'self_quit',
         user: normalizeText(quit[1]),
         confidence: 0.94
-      }
+      }]
     }
 
     const direct = /^["']?(.+?)["']?加入(?:了)?群聊$/.exec(normalized)
     if (direct) {
-      return {
+      return [{
         type: 'join',
         joinType: 'direct',
         user: normalizeText(direct[1]),
         confidence: 0.9
-      }
+      }]
     }
 
-    return null
+    return []
   }
 
   private getMemberDisplayFields(member: GroupMember): string[] {
@@ -547,6 +574,31 @@ class InviteStatsService {
       member.alias,
       member.username
     ].map(normalizeText).filter(Boolean)
+  }
+
+  private matchCurrentAccountMember(members: GroupMember[], fallbackDisplayName: string): MatchResult {
+    const myWxid = this.configService.getMyWxidCleaned()
+    if (!myWxid) {
+      return {
+        wxId: '',
+        displayName: fallbackDisplayName,
+        avatarUrl: '',
+        candidates: [],
+        status: 'pending',
+        reason: '未配置当前账号'
+      }
+    }
+
+    const normalizedWxid = this.cleanAccountDirName(myWxid)
+    const member = members.find((item) => this.cleanAccountDirName(item.username) === normalizedWxid)
+    return {
+      wxId: member?.username || normalizedWxid,
+      displayName: member?.displayName || member?.groupNickname || member?.nickname || fallbackDisplayName,
+      avatarUrl: member?.avatarUrl || '',
+      candidates: [],
+      status: 'confirmed',
+      reason: member ? 'current-account-group-match' : 'current-account-config'
+    }
   }
 
   private findManualBinding(data: InviteStatsScopeData, groupId: string, displayName: string): string {
@@ -567,6 +619,10 @@ class InviteStatsService {
     const name = normalizeText(displayName)
     if (!name) {
       return { wxId: '', displayName: '', avatarUrl: '', candidates: [], status: 'pending', reason: '昵称为空' }
+    }
+
+    if (normalizeIdentityText(name) === '你') {
+      return this.matchCurrentAccountMember(members, name)
     }
 
     const manualWxid = this.findManualBinding(data, groupId, name)
@@ -637,9 +693,10 @@ class InviteStatsService {
   }): string {
     const groupId = normalizeText(event.group_id)
     const sourceMessageId = normalizeText(event.source_message_id)
-    if (groupId && sourceMessageId && sourceMessageId !== '0') return `${groupId}:msg:${sourceMessageId}`
+    const member = this.cleanAccountDirName(normalizeText(event.wx_id)) || normalizeIdentityText(event.user)
+    if (groupId && sourceMessageId && sourceMessageId !== '0') return `${groupId}:msg:${sourceMessageId}:${member || 'unknown'}`
     if (groupId && event.source_local_id && event.source_create_time) {
-      return `${groupId}:local:${event.source_local_id}:${event.source_create_time}`
+      return `${groupId}:local:${event.source_local_id}:${event.source_create_time}:${member || 'unknown'}`
     }
     if (groupId && event.wx_id && event.inviter_wx_id && event.source_create_time) {
       return `${groupId}:person:${event.wx_id}:${event.inviter_wx_id}:${event.source_create_time}`
@@ -1775,28 +1832,30 @@ class InviteStatsService {
           if (this.activeScanState) this.activeScanState.scannedMessageCount = log.scanned_messages
 
           const parsedContent = this.normalizeSystemContent(message)
-          const parsed = this.parseSystemEvent(parsedContent)
-          if (!parsed) continue
+          const parsedEvents = this.parseSystemEvents(parsedContent)
+          if (parsedEvents.length === 0) continue
 
-          if (parsed.type === 'join') {
-            const event = this.buildInviteEvent(data, parsed, message, context, parsedContent)
-            this.upsertRawEventFromInvite(data, event)
-            if (!this.hasInviteEvent(data, event)) {
-              data.inviteEvents.push(event)
-              log.new_invites += 1
-              if (event.status === 'pending') log.pending_count += 1
-              lastInviteTime = Math.max(lastInviteTime, event.invite_time)
-              lastMessageId = event.source_message_id || lastMessageId
-            }
-          } else {
-            const event = this.buildQuitEvent(data, parsed, message, context, parsedContent)
-            this.upsertRawEventFromQuit(data, event)
-            if (!this.hasQuitEvent(data, event)) {
-              data.quitEvents.push(event)
-              log.new_quits += 1
-              if (event.status === 'pending') log.pending_count += 1
-              if (event.status === 'confirmed') this.applyQuitEventToInviteFlags(data, event)
-              lastMessageId = event.source_message_id || lastMessageId
+          for (const parsed of parsedEvents) {
+            if (parsed.type === 'join') {
+              const event = this.buildInviteEvent(data, parsed, message, context, parsedContent)
+              this.upsertRawEventFromInvite(data, event)
+              if (!this.hasInviteEvent(data, event)) {
+                data.inviteEvents.push(event)
+                log.new_invites += 1
+                if (event.status === 'pending') log.pending_count += 1
+                lastInviteTime = Math.max(lastInviteTime, event.invite_time)
+                lastMessageId = event.source_message_id || lastMessageId
+              }
+            } else {
+              const event = this.buildQuitEvent(data, parsed, message, context, parsedContent)
+              this.upsertRawEventFromQuit(data, event)
+              if (!this.hasQuitEvent(data, event)) {
+                data.quitEvents.push(event)
+                log.new_quits += 1
+                if (event.status === 'pending') log.pending_count += 1
+                if (event.status === 'confirmed') this.applyQuitEventToInviteFlags(data, event)
+                lastMessageId = event.source_message_id || lastMessageId
+              }
             }
           }
         }
