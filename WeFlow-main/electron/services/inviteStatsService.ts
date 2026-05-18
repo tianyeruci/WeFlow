@@ -2080,7 +2080,7 @@ class InviteStatsService {
       const recentActivities = this.buildMemberTraceRows(data, {
         tagId,
         includeQuit: true
-      }).slice(0, 20)
+      }).filter((row) => row.status !== 'ignored').slice(0, 20)
       if (changed) this.persist()
 
       return {
@@ -2188,7 +2188,11 @@ class InviteStatsService {
         if (statusFilter === 'quit' && row.delete_flag !== 1 && row.event_type !== 'quit') return false
         if (statusFilter === 'pending' && row.status !== 'pending') return false
         if (attributionFilter === 'valid' && (row.event_type !== 'invite' || row.status !== 'confirmed' || row.valid_flag !== 1)) return false
-        if (attributionFilter === 'invalid' && (row.event_type !== 'invite' || row.status !== 'confirmed' || row.valid_flag !== -1)) return false
+        if (attributionFilter === 'invalid') {
+          const isIgnored = row.status === 'ignored'
+          const isInvalidInvite = row.event_type === 'invite' && row.status === 'confirmed' && row.valid_flag === -1
+          if (!isIgnored && !isInvalidInvite) return false
+        }
         if (attributionFilter === 'pending' && row.status !== 'pending') return false
         if (keyword) {
           const fields = [row.user, row.wx_id, row.inviter, row.inviter_wx_id, row.group_name, row.group_id]
@@ -2346,8 +2350,8 @@ class InviteStatsService {
         row.group_name,
         row.group_id,
         this.formatTime(row.event_time),
-        row.status !== 'confirmed' ? '待确认' : (row.event_type === 'quit' || row.delete_flag === 1 ? '已退出群' : '未退出群'),
-        row.status !== 'confirmed' ? '待确认' : row.event_type !== 'invite' ? '-' : row.valid_flag === 1 ? '有效' : row.valid_flag === -1 ? '无效' : '-',
+        row.status === 'ignored' ? '已忽略' : row.status !== 'confirmed' ? '待确认' : (row.event_type === 'quit' || row.delete_flag === 1 ? '已退出群' : '未退出群'),
+        row.status === 'ignored' ? '无效' : row.status !== 'confirmed' ? '待确认' : row.event_type !== 'invite' ? '-' : row.valid_flag === 1 ? '有效' : row.valid_flag === -1 ? '无效' : '-',
         row.join_type || row.quit_type
       ])
       const format = this.normalizeExportFormat(payload.filePath, payload.format)

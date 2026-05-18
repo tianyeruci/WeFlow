@@ -118,18 +118,21 @@ const statusLabel = (value?: string): string => {
 }
 
 const traceStatusLabel = (row: InviteMemberTraceRow): string => {
+  if (row.status === 'ignored') return '已忽略'
   if (row.status !== 'confirmed') return '待确认'
   if (row.event_type === 'quit' || row.delete_flag === 1) return '已退出群'
   return '未退出群'
 }
 
 const traceStatusClass = (row: InviteMemberTraceRow): string => {
+  if (row.status === 'ignored') return 'ignored'
   if (row.status !== 'confirmed') return 'pending'
   if (row.event_type === 'quit' || row.delete_flag === 1) return 'quit'
   return 'active'
 }
 
 const traceAttributionLabel = (row: InviteMemberTraceRow): string => {
+  if (row.status === 'ignored') return '无效'
   if (row.status !== 'confirmed') return '待确认'
   if (row.event_type !== 'invite') return '-'
   if (row.valid_flag === 1) return '有效'
@@ -787,13 +790,6 @@ function InviteStatsPage() {
       {toast && <div className="invite-toast">{toast}</div>}
 
       <header className="invite-topbar">
-        <div className="invite-brand">
-          <div className="invite-brand-mark">邀</div>
-          <div>
-            <strong>WeFlow 邀请统计</strong>
-            <span>本地微信群邀请归因大屏</span>
-          </div>
-        </div>
         <nav className="invite-screen-nav" aria-label="邀请统计视图">
           {viewItems.map((item) => {
             const Icon = item.icon

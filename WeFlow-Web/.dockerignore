@@ -1,0 +1,12 @@
+.git
+.next
+.next-build
+node_modules
+.env
+.env.*
+*.log
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+.codex-dev.log
+.codex-dev.err.log
+coverage
