@@ -3673,8 +3673,14 @@ function registerIpcHandlers() {
   ipcMain.handle('inviteStats:exportRawEvents', async (_, payload: any) => {
     return inviteStatsService.exportRawEvents(payload)
   })
+  ipcMain.handle('inviteStats:getRemoteSyncConfig', async () => {
+    return inviteStatsSyncService.getResolvedOptions()
+  })
   ipcMain.handle('inviteStats:syncRemote', async (_, options?: { endpoint?: string; token?: string }) => {
     return inviteStatsSyncService.queueSync(options)
+  })
+  ipcMain.handle('inviteStats:resetAllData', async (_, options?: { endpoint?: string; token?: string }) => {
+    return inviteStatsSyncService.resetAllData(options)
   })
 
   // 打开协议窗口

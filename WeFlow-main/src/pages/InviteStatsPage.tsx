@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import ReactECharts from 'echarts-for-react'
 import {
+  AlertTriangle,
   BarChart3,
   Check,
   Clock,
@@ -229,6 +230,8 @@ function InviteStatsPage() {
   const [remoteSyncToken, setRemoteSyncToken] = useState('')
   const [isSavingRemoteSync, setIsSavingRemoteSync] = useState(false)
   const [isRemoteSyncing, setIsRemoteSyncing] = useState(false)
+  const [isResettingInviteStats, setIsResettingInviteStats] = useState(false)
+  const [resetConfirmText, setResetConfirmText] = useState('')
   const [traceFilters, setTraceFilters] = useState<InviteMemberTraceFilters>({
     includeQuit: true,
     limit: 200
@@ -251,12 +254,10 @@ function InviteStatsPage() {
   }, [])
 
   const openRemoteSyncSettings = useCallback(async () => {
-    const [url, token] = await Promise.all([
-      configService.getInviteRemoteSyncUrl(),
-      configService.getInviteRemoteSyncToken()
-    ])
-    setRemoteSyncUrl(url)
-    setRemoteSyncToken(token)
+    const config = await window.electronAPI.inviteStats.getRemoteSyncConfig()
+    setRemoteSyncUrl(config.endpoint || '')
+    setRemoteSyncToken(config.token || '')
+    setResetConfirmText('')
     setRemoteSyncDialogOpen(true)
   }, [])
 
@@ -294,6 +295,46 @@ function InviteStatsPage() {
       setRemoteSyncDialogOpen(false)
     } finally {
       setIsRemoteSyncing(false)
+    }
+  }
+
+  const resetInviteStatsData = async () => {
+    if (resetConfirmText !== 'RESET') {
+      showToast('请输入 RESET 后再恢复初始化')
+      return
+    }
+
+    const confirmed = window.confirm('恢复初始化会删除本地邀请统计记录，并清空远端邀请统计相关表数据。该操作不可撤销，确定继续吗？')
+    if (!confirmed) return
+
+    setIsResettingInviteStats(true)
+    try {
+      await Promise.all([
+        configService.setInviteRemoteSyncUrl(remoteSyncUrl),
+        configService.setInviteRemoteSyncToken(remoteSyncToken)
+      ])
+      const result = await window.electronAPI.inviteStats.resetAllData({
+        endpoint: remoteSyncUrl.trim(),
+        token: remoteSyncToken.trim()
+      })
+      if (!result.success) {
+        showToast(result.error || '恢复初始化失败')
+        return
+      }
+      setRemoteSyncDialogOpen(false)
+      setResetConfirmText('')
+      setSelectedTagId('')
+      setDashboard(null)
+      setTraceRows([])
+      setTraceTotal(0)
+      setPendingRows([])
+      setScanLogs([])
+      setRankingGroupId('')
+      setTraceFilters((prev) => ({ ...prev, groupId: undefined, keyword: '' }))
+      showToast('已恢复初始化')
+      await refreshMeta()
+    } finally {
+      setIsResettingInviteStats(false)
     }
   }
 
@@ -1162,6 +1203,111 @@ function InviteStatsPage() {
               <button className="invite-primary-btn" type="submit" disabled={!createTagName.trim() || isCreatingTag}>
                 {isCreatingTag ? <Loader2 size={16} className="spin" /> : <Plus size={16} />}
                 <span>确认创建</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {remoteSyncDialogOpen && (
+        <div
+          className="invite-modal-mask"
+          role="dialog"
+          aria-modal="true"
+          aria-label="远程同步设置"
+          onMouseDown={() => {
+            if (!isSavingRemoteSync && !isRemoteSyncing && !isResettingInviteStats) setRemoteSyncDialogOpen(false)
+          }}
+        >
+          <form
+            className="invite-remote-sync-modal"
+            onMouseDown={(event) => event.stopPropagation()}
+            onSubmit={(event) => {
+              event.preventDefault()
+              void saveRemoteSyncSettings()
+            }}
+          >
+            <div className="invite-modal-title">
+              <div>
+                <h2>远程同步设置</h2>
+                <p>本地邀请统计会通过这个接口写入 Supabase，留空则继续使用环境变量。</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRemoteSyncDialogOpen(false)}
+                title="关闭"
+                disabled={isSavingRemoteSync || isRemoteSyncing || isResettingInviteStats}
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="invite-remote-sync-fields">
+              <label className="invite-tag-modal-field">
+                <span>同步接口地址</span>
+                <input
+                  autoFocus
+                  value={remoteSyncUrl}
+                  onChange={(event) => setRemoteSyncUrl(event.target.value)}
+                  placeholder="https://你的-weflow-web域名/api/invite/sync"
+                  disabled={isSavingRemoteSync || isRemoteSyncing || isResettingInviteStats}
+                />
+              </label>
+              <label className="invite-tag-modal-field">
+                <span>同步 Token</span>
+                <input
+                  type="password"
+                  value={remoteSyncToken}
+                  onChange={(event) => setRemoteSyncToken(event.target.value)}
+                  placeholder="和 WeFlow-Web 的 REMOTE_SYNC_TOKEN 一样"
+                  disabled={isSavingRemoteSync || isRemoteSyncing || isResettingInviteStats}
+                />
+              </label>
+            </div>
+            <div className="invite-reset-zone">
+              <div className="invite-reset-copy">
+                <AlertTriangle size={18} />
+                <div>
+                  <strong>恢复初始化</strong>
+                  <p>删除本地邀请统计记录，并清空远端邀请统计相关表。测试脏数据清完后，生产数据再同步进来。</p>
+                </div>
+              </div>
+              <div className="invite-reset-controls">
+                <input
+                  value={resetConfirmText}
+                  onChange={(event) => setResetConfirmText(event.target.value)}
+                  placeholder="输入 RESET"
+                  disabled={isSavingRemoteSync || isRemoteSyncing || isResettingInviteStats}
+                />
+                <button
+                  type="button"
+                  className="invite-danger-btn"
+                  onClick={() => void resetInviteStatsData()}
+                  disabled={isSavingRemoteSync || isRemoteSyncing || isResettingInviteStats || resetConfirmText !== 'RESET'}
+                >
+                  {isResettingInviteStats ? <Loader2 size={16} className="spin" /> : <Trash2 size={16} />}
+                  <span>恢复初始化</span>
+                </button>
+              </div>
+            </div>
+            <div className="invite-modal-actions">
+              <button
+                type="button"
+                onClick={() => setRemoteSyncDialogOpen(false)}
+                disabled={isSavingRemoteSync || isRemoteSyncing || isResettingInviteStats}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => void syncRemoteNow()}
+                disabled={isSavingRemoteSync || isRemoteSyncing || isResettingInviteStats}
+              >
+                {isRemoteSyncing ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}
+                <span>保存并同步</span>
+              </button>
+              <button className="invite-primary-btn" type="submit" disabled={isSavingRemoteSync || isRemoteSyncing || isResettingInviteStats}>
+                {isSavingRemoteSync ? <Loader2 size={16} className="spin" /> : <Check size={16} />}
+                <span>保存设置</span>
               </button>
             </div>
           </form>

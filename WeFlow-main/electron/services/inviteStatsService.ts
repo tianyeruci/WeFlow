@@ -1758,6 +1758,18 @@ class InviteStatsService {
     }
   }
 
+  async resetAllLocalData(): Promise<{ success: boolean; error?: string }> {
+    try {
+      if (this.scanPromise) return { success: false, error: '扫描任务正在运行，请等待完成后再恢复初始化' }
+      this.ensureLoaded()
+      this.store = { version: this.fileVersion, scopes: {} }
+      this.persist()
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  }
+
   async runBackgroundScan(): Promise<void> {
     if (this.scanPromise) return
     const data = this.getScope()

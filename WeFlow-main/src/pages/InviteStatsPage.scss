@@ -83,7 +83,7 @@
   top: 0;
   z-index: 20;
   display: grid;
-  grid-template-columns: 300px 1fr;
+  grid-template-columns: 300px 1fr 42px;
   align-items: stretch;
   gap: 18px;
   min-width: 1280px;
@@ -92,6 +92,23 @@
   color: #fff;
   background: var(--invite-nav);
   box-shadow: 0 6px 20px rgba(16, 18, 32, 0.2);
+}
+
+.invite-sync-settings-btn {
+  align-self: center;
+  width: 38px;
+  min-height: 38px;
+  padding: 0;
+  border-color: rgba(255, 255, 255, 0.96);
+  background: #fff;
+  color: #123a73;
+  box-shadow: 0 10px 24px rgba(9, 20, 46, 0.2);
+
+  &:hover:not(:disabled) {
+    border-color: #dbe8ff;
+    background: #f2f7ff;
+    color: #0a2d64;
+  }
 }
 
 .invite-brand {
@@ -1113,6 +1130,71 @@
   box-shadow: 0 28px 80px rgba(15, 23, 42, 0.28);
 }
 
+.invite-remote-sync-modal {
+  width: min(620px, 92vw);
+  padding: 20px;
+  border: 1px solid rgba(231, 233, 240, 0.95);
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 28px 80px rgba(15, 23, 42, 0.28);
+}
+
+.invite-remote-sync-fields {
+  display: grid;
+  gap: 2px;
+}
+
+.invite-reset-zone {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 14px;
+  border: 1px solid #ffd0d0;
+  border-radius: 10px;
+  background: #fff7f7;
+}
+
+.invite-reset-copy {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 10px;
+  color: #b4232a;
+
+  svg {
+    margin-top: 1px;
+    color: #c84144;
+  }
+
+  strong {
+    display: block;
+    font-weight: 900;
+  }
+
+  p {
+    margin: 4px 0 0;
+    color: #7f1d1d;
+    font-size: 13px;
+    line-height: 1.55;
+    font-weight: 800;
+  }
+}
+
+.invite-reset-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+
+  input {
+    min-height: 40px;
+    border-color: #ffd0d0;
+    background: #fff;
+  }
+
+  button {
+    min-width: 132px;
+  }
+}
+
 .invite-tag-modal-field {
   display: grid;
   gap: 8px;
@@ -1212,7 +1294,7 @@
   }
 
   .invite-topbar {
-    grid-template-columns: 270px 1fr;
+    grid-template-columns: 270px 1fr 42px;
   }
 
   .invite-toolbar {

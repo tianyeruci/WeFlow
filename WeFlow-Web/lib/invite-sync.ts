@@ -1,4 +1,4 @@
-import { supabaseUpsert } from './supabase-rest'
+import { supabaseDelete, supabaseUpsert } from './supabase-rest'
 
 type ActivityTagRow = {
   id: string
@@ -174,6 +174,27 @@ export async function syncInvitePayload(payload: InviteSyncPayload) {
   return {
     accountScope,
     counts
+  }
+}
+
+export async function resetInviteStatsRemoteData() {
+  const tables = [
+    'sync_batches',
+    'scan_logs',
+    'member_identity_bindings',
+    'quit_events',
+    'invite_events',
+    'raw_events',
+    'group_tag_bindings',
+    'activity_tags'
+  ]
+
+  for (const table of tables) {
+    await supabaseDelete(table, { id: 'not.is.null' })
+  }
+
+  return {
+    tables
   }
 }
 
