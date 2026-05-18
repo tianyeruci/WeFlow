@@ -27,6 +27,10 @@ type FinalStatEvent = {
   inviter?: string
   inviter_name?: string
   inviter_wx_id?: string
+  operator_name?: string
+  operator_wxid?: string
+  join_type?: string
+  quit_type?: string
   invite_time?: string | null
   exit_time?: string | null
   created_time?: string | null
@@ -69,9 +73,12 @@ export async function listActivityTags(): Promise<ActivityTag[]> {
 export async function getDashboard(filters: DashboardFilters): Promise<DashboardData> {
   const events = await loadFinalEvents(filters.tagId)
   const confirmedEvents = events.filter(isConfirmedStatEvent)
-  const inviteEvents = confirmedEvents.filter(row => row.event_type === 'invite' && row.invite_time)
+  const inviteEvents = confirmedEvents.filter(isInviteEvent)
+  const effectiveInviteEvents = inviteEvents.filter(isEffectiveInviteEvent)
+  const activeInviteEvents = inviteEvents.filter(row => row.delete_flag !== 1)
+  const quitEvents = confirmedEvents.filter(isQuitEvent)
   const groups = buildGroups(confirmedEvents)
-  const rankingEvents = inviteEvents.filter(row => {
+  const rankingEvents = effectiveInviteEvents.filter(row => {
     if (filters.rankingGroupId && String(row.group_id || '') !== filters.rankingGroupId) return false
     return withinRange(row.invite_time, filters.rankingStart, filters.rankingEnd)
   })
@@ -80,24 +87,27 @@ export async function getDashboard(filters: DashboardFilters): Promise<Dashboard
     cards: {
       activeRobots: 0,
       monitoredGroups: groups.length,
-      totalMembers: countUniqueMembers(inviteEvents.filter(row => row.delete_flag !== 1)),
+      totalMembers: countUniqueMembers(effectiveInviteEvents.filter(row => row.delete_flag !== 1)),
       totalMembersWithQuit: countUniqueMembers(inviteEvents),
-      todayNew: inviteEvents.filter(row => isToday(row.invite_time)).length,
+      todayNew: countUniqueMembers(effectiveInviteEvents.filter(row => isToday(row.invite_time))),
+      todayQuit: countUniqueMembers(quitEvents.filter(row => isToday(eventTime(row)))),
       pendingCount: events.filter(row => row.status === 'pending').length
     },
     groups,
-    hourlyDistribution: buildHourlyDistribution(inviteEvents),
+    hourlyDistribution: buildHourlyDistribution(effectiveInviteEvents),
     inviteRanking: buildInviteRanking(rankingEvents),
-    groupRanking: buildGroupRanking(inviteEvents),
-    recentActivities: inviteEvents
+    groupRanking: buildGroupRanking(activeInviteEvents),
+    recentActivities: confirmedEvents
       .slice()
-      .sort((a, b) => timeValue(b.invite_time) - timeValue(a.invite_time))
+      .sort((a, b) => timeValue(eventTime(b)) - timeValue(eventTime(a)))
       .slice(0, 9)
       .map(row => ({
+        eventType: isQuitEvent(row) ? 'quit' as const : 'invite' as const,
         memberName: memberName(row),
-        inviterName: inviterName(row),
+        sourceName: isQuitEvent(row) ? operatorName(row) : inviterName(row),
+        sourceLabel: isQuitEvent(row) ? quitTypeText(row.quit_type) : joinTypeText(row),
         groupName: groupName(row),
-        time: row.invite_time || null
+        time: eventTime(row)
       }))
   }
 }
@@ -166,6 +176,18 @@ function isConfirmedStatEvent(row: FinalStatEvent) {
   return row.status !== 'pending' && row.status !== 'ignored'
 }
 
+function isInviteEvent(row: FinalStatEvent) {
+  return row.event_type === 'invite'
+}
+
+function isQuitEvent(row: FinalStatEvent) {
+  return row.event_type === 'quit' || row.event_type === 'exit'
+}
+
+function isEffectiveInviteEvent(row: FinalStatEvent) {
+  return isInviteEvent(row) && row.status === 'confirmed' && row.valid_flag === 1 && Boolean(memberKey(row))
+}
+
 function isVisibleForTrace(row: FinalStatEvent) {
   return row.status !== 'ignored'
 }
@@ -190,16 +212,19 @@ function buildHourlyDistribution(events: FinalStatEvent[]) {
 }
 
 function buildInviteRanking(events: FinalStatEvent[]): InviteRankingRow[] {
-  const ranking = new Map<string, InviteRankingRow>()
+  const ranking = new Map<string, { inviterId: string; inviterName: string; members: Set<string> }>()
   events.forEach(row => {
     const name = inviterName(row)
     if (!name || name === '未知来源') return
     const id = String(row.inviter_wx_id || name)
-    const current = ranking.get(id) || { inviterId: id, inviterName: name, count: 0 }
-    current.count += 1
+    const current = ranking.get(id) || { inviterId: id, inviterName: name, members: new Set<string>() }
+    const key = memberKey(row)
+    if (key) current.members.add(key)
     ranking.set(id, current)
   })
-  return Array.from(ranking.values()).sort((a, b) => b.count - a.count)
+  return Array.from(ranking.values())
+    .map(row => ({ inviterId: row.inviterId, inviterName: row.inviterName, count: row.members.size }))
+    .sort((a, b) => b.count - a.count)
 }
 
 function buildGroupRanking(events: FinalStatEvent[]) {
@@ -218,11 +243,17 @@ function buildGroupRanking(events: FinalStatEvent[]) {
 }
 
 function countUniqueMembers(events: FinalStatEvent[]) {
-  return new Set(events.map(memberKey)).size
+  return new Set(events.map(memberKey).filter(Boolean)).size
 }
 
 function memberKey(row: FinalStatEvent) {
-  return String(row.wx_id || row.wxid || row.user || row.member_name || row.event_id || row.id || '')
+  return normalizeIdentity(row.wx_id || row.wxid) ||
+    normalizeIdentity(row.user || row.member_name) ||
+    String(row.event_id || row.id || '')
+}
+
+function normalizeIdentity(value: unknown) {
+  return String(value || '').trim().toLowerCase()
 }
 
 function memberName(row: FinalStatEvent) {
@@ -233,6 +264,10 @@ function inviterName(row: FinalStatEvent) {
   return String(row.inviter || row.inviter_name || '未知来源')
 }
 
+function operatorName(row: FinalStatEvent) {
+  return String(row.operator_name || '系统')
+}
+
 function groupName(row: FinalStatEvent) {
   return String(row.group_name || row.group_id || '未知群')
 }
@@ -240,17 +275,17 @@ function groupName(row: FinalStatEvent) {
 function toMemberTraceRow(row: FinalStatEvent): MemberTraceRow {
   const status = toTraceStatus(row)
   const attribution = toTraceAttribution(row)
-  const sourcePrefix = row.event_type === 'exit' ? '退出' : inviterName(row) === '未知来源' ? '扫码' : '邀请'
-  const sourceName = row.event_type === 'exit' ? memberName(row) : inviterName(row)
+  const sourcePrefix = isQuitEvent(row) ? quitTypeText(row.quit_type) : joinTypeText(row)
+  const sourceName = isQuitEvent(row) ? operatorName(row) : inviterName(row)
 
   return {
-    id: String(row.event_id || row.id || `${row.group_id || ''}-${memberKey(row)}-${row.invite_time || row.exit_time || row.created_time || ''}`),
+    id: String(row.event_id || row.id || `${row.group_id || ''}-${memberKey(row)}-${eventTime(row) || ''}`),
     memberName: memberName(row),
     wxid: String(row.wx_id || row.wxid || ''),
     source: `${sourcePrefix} · ${sourceName}`,
     groupId: String(row.group_id || ''),
     groupName: groupName(row),
-    time: row.invite_time || row.exit_time || row.created_time || null,
+    time: eventTime(row),
     status,
     attribution,
     rawContent: String(row.raw_content || row.source_raw_content || '')
@@ -259,7 +294,7 @@ function toMemberTraceRow(row: FinalStatEvent): MemberTraceRow {
 
 function toTraceStatus(row: FinalStatEvent): TraceStatus {
   if (row.status === 'pending') return 'pending'
-  if (row.delete_flag === 1 || row.event_type === 'exit' || row.exit_time) return 'quit'
+  if (row.delete_flag === 1 || isQuitEvent(row) || row.exit_time) return 'quit'
   return 'active'
 }
 
@@ -282,6 +317,22 @@ function isToday(value?: string | null) {
   if (!date) return false
   const now = new Date()
   return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate()
+}
+
+function eventTime(row: FinalStatEvent) {
+  return row.invite_time || row.exit_time || row.created_time || null
+}
+
+function joinTypeText(row: FinalStatEvent) {
+  if (row.join_type === 'qrcode') return '扫码'
+  if (row.join_type === 'direct') return '直接入群'
+  return inviterName(row) === '未知来源' ? '扫码' : '邀请'
+}
+
+function quitTypeText(value?: string) {
+  if (value === 'self_quit') return '主动退群'
+  if (value === 'removed') return '被移出'
+  return '退群'
 }
 
 function toDate(value?: string | null) {

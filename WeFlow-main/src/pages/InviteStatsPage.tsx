@@ -5,6 +5,7 @@ import {
   BarChart3,
   Check,
   Clock,
+  Copy,
   Download,
   FileSpreadsheet,
   Loader2,
@@ -213,6 +214,7 @@ function InviteStatsPage() {
   const [traceEndDateTime, setTraceEndDateTime] = useState('')
   const [groupSearch, setGroupSearch] = useState('')
   const [groupSort, setGroupSort] = useState<GroupSortKey>('member_count')
+  const [groupUnitTagFilter, setGroupUnitTagFilter] = useState('')
   const [dashboard, setDashboard] = useState<InviteDashboardData | null>(null)
   const [traceRows, setTraceRows] = useState<InviteMemberTraceRow[]>([])
   const [traceTotal, setTraceTotal] = useState(0)
@@ -295,6 +297,31 @@ function InviteStatsPage() {
       setRemoteSyncDialogOpen(false)
     } finally {
       setIsRemoteSyncing(false)
+    }
+  }
+
+  const copyRawPreview = async () => {
+    const text = rawPreview?.raw_content || ''
+    if (!text.trim()) {
+      showToast('暂无可复制内容')
+      return
+    }
+
+    try {
+      await navigator.clipboard.writeText(text)
+      showToast('原始消息已复制')
+    } catch {
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.setAttribute('readonly', 'true')
+      textarea.style.position = 'fixed'
+      textarea.style.top = '-9999px'
+      textarea.style.left = '-9999px'
+      document.body.appendChild(textarea)
+      textarea.select()
+      const copied = document.execCommand('copy')
+      document.body.removeChild(textarea)
+      showToast(copied ? '原始消息已复制' : '复制失败，请手动选择文本复制')
     }
   }
 
@@ -503,14 +530,19 @@ function InviteStatsPage() {
     const result = await window.electronAPI.inviteStats.scanActivity(selectedTagId)
     if (!result.success) {
       showToast(result.error || '扫描失败')
+      setIsScanning(false)
+      await refreshMeta(selectedTagId)
+      return
+    }
+    if (result.running) {
+      showToast('已有扫描任务正在运行')
     } else {
-      showToast(`增量扫描完成：新增 ${result.log?.new_invites || 0} 条入群，${result.log?.new_quits || 0} 条退群`)
+      showToast('增量扫描已开始，后台异步执行')
     }
     await refreshMeta(selectedTagId)
     await loadDashboard()
     if (activeView === 'trace') await loadTrace()
     if (activeView === 'pending') await loadPending()
-    setIsScanning(false)
   }
 
   const updateGroupTag = async (groupId: string, tagId: string) => {
@@ -630,6 +662,12 @@ function InviteStatsPage() {
     const keyword = groupSearch.trim().toLowerCase()
     return groups
       .filter((group) => {
+        let unitMatches = true
+        if (groupUnitTagFilter === '__unset') unitMatches = !group.binding_enabled
+        else if (groupUnitTagFilter && groupUnitTagFilter !== '__all') {
+          unitMatches = group.binding_enabled && group.tag_id === groupUnitTagFilter
+        }
+        if (!unitMatches) return false
         if (!keyword) return true
         return [
           group.group_name,
@@ -638,7 +676,7 @@ function InviteStatsPage() {
         ].some((value) => String(value || '').toLowerCase().includes(keyword))
       })
       .sort((a, b) => Number(b[groupSort] || 0) - Number(a[groupSort] || 0))
-  }, [groupSearch, groupSort, groups])
+  }, [groupSearch, groupSort, groupUnitTagFilter, groups])
 
   const tagGroups = useMemo(
     () => groups.filter((group) => group.tag_id === selectedTagId && group.binding_enabled),
@@ -652,6 +690,10 @@ function InviteStatsPage() {
       setTraceFilters((prev) => ({ ...prev, groupId: undefined }))
     }
   }, [rankingGroupId, tagGroups, traceFilters.groupId])
+
+  useEffect(() => {
+    setGroupUnitTagFilter(selectedTagId || '__all')
+  }, [selectedTagId])
 
   const hourlyOption = useMemo(() => {
     const rows = dashboard?.hourlyDistribution || []
@@ -970,6 +1012,15 @@ function InviteStatsPage() {
                 <input value={groupSearch} onChange={(event) => setGroupSearch(event.target.value)} placeholder="搜索群名 / 群 ID" />
                 {groupSearch && <button onClick={() => setGroupSearch('')}><X size={14} /></button>}
               </div>
+              <select
+                value={groupUnitTagFilter || '__all'}
+                onChange={(event) => setGroupUnitTagFilter(event.target.value)}
+                aria-label="单元标签筛选"
+              >
+                <option value="__all">全部单元</option>
+                <option value="__unset">未设置</option>
+                {tags.map((tag) => <option key={tag.tag_id} value={tag.tag_id}>{tag.tag_name}</option>)}
+              </select>
               <select value={groupSort} onChange={(event) => setGroupSort(event.target.value as GroupSortKey)}>
                 {groupSortOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
@@ -1075,14 +1126,6 @@ function InviteStatsPage() {
               >
                 {traceAttributionOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
-              <label className="invite-check">
-                <input
-                  type="checkbox"
-                  checked={traceFilters.includeQuit !== false}
-                  onChange={(event) => setTraceFilters((prev) => ({ ...prev, includeQuit: event.target.checked }))}
-                />
-                <span>含退群</span>
-              </label>
               <button onClick={() => void loadTrace()}><RefreshCw size={15} />查询</button>
               <button onClick={exportTrace}><Download size={15} />导出</button>
             </div>
@@ -1320,13 +1363,17 @@ function InviteStatsPage() {
             <div className="invite-modal-title">
               <div>
                 <h2>完整原始消息</h2>
-                <p>{rawPreview.group_name} · {formatTime(rawPreview.event_time)}</p>
               </div>
-              <button type="button" onClick={() => setRawPreview(null)} title="关闭">
-                <X size={16} />
-              </button>
+              <div className="invite-modal-title-actions">
+                <button type="button" onClick={() => void copyRawPreview()} title="复制原始消息">
+                  <Copy size={16} />
+                </button>
+                <button type="button" onClick={() => setRawPreview(null)} title="关闭">
+                  <X size={16} />
+                </button>
+              </div>
             </div>
-            <pre>{rawPreview.raw_content || '无原始消息'}</pre>
+            <textarea className="invite-raw-content" value={rawPreview.raw_content || '无原始消息'} readOnly />
           </div>
         </div>
       )}

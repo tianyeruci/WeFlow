@@ -14,6 +14,7 @@ const emptyDashboard: DashboardData = {
     totalMembers: 0,
     totalMembersWithQuit: 0,
     todayNew: 0,
+    todayQuit: 0,
     pendingCount: 0
   },
   groups: [],
@@ -46,10 +47,10 @@ export default function RemoteViewerPage() {
   const [traceEnd, setTraceEnd] = useState('')
   const [traceStatus, setTraceStatus] = useState('')
   const [traceAttribution, setTraceAttribution] = useState('')
-  const [traceIncludeQuit, setTraceIncludeQuit] = useState(true)
   const [rawMessage, setRawMessage] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
 
   const selectedTag = useMemo(
     () => tags.find(tag => tag.id === selectedTagId),
@@ -117,7 +118,6 @@ export default function RemoteViewerPage() {
     if (traceEnd) params.set('endTime', traceEnd)
     if (traceStatus) params.set('status', traceStatus)
     if (traceAttribution) params.set('attribution', traceAttribution)
-    params.set('includeQuit', String(traceIncludeQuit))
 
     setLoading(true)
     setError('')
@@ -130,7 +130,7 @@ export default function RemoteViewerPage() {
     } finally {
       setLoading(false)
     }
-  }, [apiGet, selectedTagId, traceAttribution, traceEnd, traceGroupId, traceIncludeQuit, traceKeyword, traceStart, traceStatus])
+  }, [apiGet, selectedTagId, traceAttribution, traceEnd, traceGroupId, traceKeyword, traceStart, traceStatus])
 
   useEffect(() => {
     void loadTags()
@@ -171,7 +171,6 @@ export default function RemoteViewerPage() {
       if (traceEnd) params.set('endTime', traceEnd)
       if (traceStatus) params.set('status', traceStatus)
       if (traceAttribution) params.set('attribution', traceAttribution)
-      params.set('includeQuit', String(traceIncludeQuit))
     }
 
     const response = await fetch(`${endpoint}?${params}`)
@@ -192,6 +191,24 @@ export default function RemoteViewerPage() {
   const rankingMax = Math.max(...dashboard.inviteRanking.map(row => row.count), 1)
   const groupMax = Math.max(...dashboard.groupRanking.map(row => row.count), 1)
   const chartPoints = buildLinePoints(dashboard.hourlyDistribution)
+
+  async function copyRawMessage() {
+    if (!rawMessage.trim()) {
+      showNotice('暂无可复制内容')
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(rawMessage)
+      showNotice('原始消息已复制')
+    } catch {
+      showNotice('复制失败，请手动选择文本复制')
+    }
+  }
+
+  function showNotice(message: string) {
+    setNotice(message)
+    window.setTimeout(() => setNotice(''), 2400)
+  }
 
   return (
     <div className="app-shell">
@@ -218,6 +235,7 @@ export default function RemoteViewerPage() {
             </section>
 
             {error && <div className="error-banner">{error}</div>}
+            {notice && <div className="notice-banner">{notice}</div>}
             {loading && <div className="loading-line">正在读取远程统计数据</div>}
 
             {view === 'dashboard' && (
@@ -237,7 +255,7 @@ export default function RemoteViewerPage() {
                     </label>
                   </article>
                   <MetricCard tone="violet" icon="新" value={formatNumber(dashboard.cards.todayNew)} label="今日新增" />
-                  <MetricCard tone="red" icon="待" value={formatNumber(dashboard.cards.pendingCount)} label="待处理数" />
+                  <MetricCard tone="red" icon="退" value={formatNumber(dashboard.cards.todayQuit)} label="今日退群" />
                 </section>
 
                 <section className="dashboard-main">
@@ -335,7 +353,7 @@ export default function RemoteViewerPage() {
                           <div className="avatar">{row.memberName.slice(0, 1) || '成'}</div>
                           <div className="activity-main">
                             <strong>{row.memberName}</strong>
-                            <span>邀请 · {row.inviterName}<br />{row.groupName}</span>
+                            <span>{row.sourceLabel} · {row.sourceName}<br />{row.groupName}</span>
                           </div>
                           <div className="activity-time">{formatShortTime(row.time)}</div>
                         </div>
@@ -366,8 +384,8 @@ export default function RemoteViewerPage() {
                     </div>
                     <select value={traceStatus} onChange={event => setTraceStatus(event.target.value)} aria-label="状态筛选">
                       <option value="">全部状态</option>
-                      <option value="active">未退出</option>
-                      <option value="quit">退出</option>
+                      <option value="active">未退出群</option>
+                      <option value="quit">已退出群</option>
                       <option value="pending">待确认</option>
                     </select>
                     <select value={traceAttribution} onChange={event => setTraceAttribution(event.target.value)} aria-label="归因筛选">
@@ -376,7 +394,6 @@ export default function RemoteViewerPage() {
                       <option value="invalid">无效</option>
                       <option value="pending">待确认</option>
                     </select>
-                    <label className="check"><input type="checkbox" checked={traceIncludeQuit} onChange={event => setTraceIncludeQuit(event.target.checked)} /> 含退群</label>
                     <button onClick={() => void exportCsv('trace')}>导出</button>
                   </div>
                   <div className="table-wrap">
@@ -408,7 +425,10 @@ export default function RemoteViewerPage() {
           <div className="modal-card">
             <h3>原始系统消息</h3>
             <textarea value={rawMessage} readOnly />
-            <div className="modal-actions"><button onClick={() => setRawMessage('')}>关闭</button></div>
+            <div className="modal-actions">
+              <button onClick={() => void copyRawMessage()}>复制</button>
+              <button onClick={() => setRawMessage('')}>关闭</button>
+            </div>
           </div>
         </div>
       )}
@@ -506,9 +526,9 @@ function barColor(index: number) {
 }
 
 function statusText(status: string) {
-  if (status === 'quit') return '已退出'
+  if (status === 'quit') return '已退出群'
   if (status === 'pending') return '待确认'
-  return '未退出'
+  return '未退出群'
 }
 
 function attributionText(attribution: string) {

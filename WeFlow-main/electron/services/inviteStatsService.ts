@@ -476,66 +476,93 @@ class InviteStatsService {
     return text
   }
 
-  private parseSystemEvent(text: string): ParsedSystemEvent | null {
+  private splitInvitedUsers(text: string): string[] {
+    const users: string[] = []
+    let rest = normalizeText(text)
+      .replace(/[“”]/g, '"')
+      .replace(/[‘’]/g, "'")
+
+    const addUser = (value: string): void => {
+      const user = normalizeText(value).replace(/^["']+|["']+$/g, '').trim()
+      if (user) users.push(user)
+    }
+
+    const currentUserPrefix = /^["']?你["']?和/.exec(rest)
+    if (currentUserPrefix) {
+      users.push('你')
+      rest = rest.slice(currentUserPrefix[0].length)
+    }
+
+    rest
+      .replace(/^["']+|["']+$/g, '')
+      .split(/[、,，]/)
+      .forEach(addUser)
+
+    return users
+  }
+
+  private parseSystemEvents(text: string): ParsedSystemEvent[] {
     const normalized = normalizeText(text)
       .replace(/[。.!！]+$/g, '')
       .replace(/\s+/g, ' ')
-    if (!normalized) return null
+    if (!normalized) return []
 
     const qrcode = /^["']?(.+?)["']?通过扫描["']?(.+?)["']?分享的二维码加入(?:了)?群聊$/.exec(normalized)
     if (qrcode) {
-      return {
+      return [{
         type: 'join',
         joinType: 'qrcode',
         user: normalizeText(qrcode[1]),
         inviter: normalizeText(qrcode[2]) || '未知来源',
         confidence: 0.94
-      }
+      }]
     }
 
     const invite = /^["']?(.+?)["']?邀请["']?(.+?)["']?加入(?:了)?群聊$/.exec(normalized)
     if (invite) {
-      return {
+      const inviter = normalizeText(invite[1])
+      const users = this.splitInvitedUsers(invite[2])
+      return users.map((user) => ({
         type: 'join',
         joinType: 'invite',
-        inviter: normalizeText(invite[1]),
-        user: normalizeText(invite[2]),
+        inviter,
+        user,
         confidence: 0.96
-      }
+      }))
     }
 
     const removed = /^["']?(.+?)["']?被["']?(.+?)["']?移出(?:了)?群聊$/.exec(normalized)
     if (removed) {
-      return {
+      return [{
         type: 'quit',
         quitType: 'removed',
         user: normalizeText(removed[1]),
         operator: normalizeText(removed[2]),
         confidence: 0.94
-      }
+      }]
     }
 
     const quit = /^["']?(.+?)["']?退出(?:了)?群聊$/.exec(normalized)
     if (quit) {
-      return {
+      return [{
         type: 'quit',
         quitType: 'self_quit',
         user: normalizeText(quit[1]),
         confidence: 0.94
-      }
+      }]
     }
 
     const direct = /^["']?(.+?)["']?加入(?:了)?群聊$/.exec(normalized)
     if (direct) {
-      return {
+      return [{
         type: 'join',
         joinType: 'direct',
         user: normalizeText(direct[1]),
         confidence: 0.9
-      }
+      }]
     }
 
-    return null
+    return []
   }
 
   private getMemberDisplayFields(member: GroupMember): string[] {
@@ -547,6 +574,31 @@ class InviteStatsService {
       member.alias,
       member.username
     ].map(normalizeText).filter(Boolean)
+  }
+
+  private matchCurrentAccountMember(members: GroupMember[], fallbackDisplayName: string): MatchResult {
+    const myWxid = this.configService.getMyWxidCleaned()
+    if (!myWxid) {
+      return {
+        wxId: '',
+        displayName: fallbackDisplayName,
+        avatarUrl: '',
+        candidates: [],
+        status: 'pending',
+        reason: '未配置当前账号'
+      }
+    }
+
+    const normalizedWxid = this.cleanAccountDirName(myWxid)
+    const member = members.find((item) => this.cleanAccountDirName(item.username) === normalizedWxid)
+    return {
+      wxId: member?.username || normalizedWxid,
+      displayName: member?.displayName || member?.groupNickname || member?.nickname || fallbackDisplayName,
+      avatarUrl: member?.avatarUrl || '',
+      candidates: [],
+      status: 'confirmed',
+      reason: member ? 'current-account-group-match' : 'current-account-config'
+    }
   }
 
   private findManualBinding(data: InviteStatsScopeData, groupId: string, displayName: string): string {
@@ -567,6 +619,10 @@ class InviteStatsService {
     const name = normalizeText(displayName)
     if (!name) {
       return { wxId: '', displayName: '', avatarUrl: '', candidates: [], status: 'pending', reason: '昵称为空' }
+    }
+
+    if (normalizeIdentityText(name) === '你') {
+      return this.matchCurrentAccountMember(members, name)
     }
 
     const manualWxid = this.findManualBinding(data, groupId, name)
@@ -637,9 +693,10 @@ class InviteStatsService {
   }): string {
     const groupId = normalizeText(event.group_id)
     const sourceMessageId = normalizeText(event.source_message_id)
-    if (groupId && sourceMessageId && sourceMessageId !== '0') return `${groupId}:msg:${sourceMessageId}`
+    const member = this.cleanAccountDirName(normalizeText(event.wx_id)) || normalizeIdentityText(event.user)
+    if (groupId && sourceMessageId && sourceMessageId !== '0') return `${groupId}:msg:${sourceMessageId}:${member || 'unknown'}`
     if (groupId && event.source_local_id && event.source_create_time) {
-      return `${groupId}:local:${event.source_local_id}:${event.source_create_time}`
+      return `${groupId}:local:${event.source_local_id}:${event.source_create_time}:${member || 'unknown'}`
     }
     if (groupId && event.wx_id && event.inviter_wx_id && event.source_create_time) {
       return `${groupId}:person:${event.wx_id}:${event.inviter_wx_id}:${event.source_create_time}`
@@ -719,8 +776,37 @@ class InviteStatsService {
     const dedupKey = event.dedup_key || this.buildRawDedupKey('invite', event)
     event.dedup_key = dedupKey
     const existing = data.rawEvents.find((item) => item.dedup_key === dedupKey)
-    if (existing) return false
     const now = this.nowSeconds()
+    if (existing) {
+      const updates: Partial<InviteRawEvent> = {
+        group_name: event.group_name,
+        member_name: event.user,
+        member_wxid: event.wx_id,
+        related_name: event.inviter,
+        related_wxid: event.inviter_wx_id,
+        join_type: event.join_type,
+        delete_flag: event.delete_flag,
+        valid_flag: event.valid_flag,
+        status: event.status,
+        invite_time: event.invite_time,
+        created_time: event.source_create_time || event.invite_time,
+        source_message_id: event.source_message_id,
+        source_local_id: event.source_local_id,
+        source_create_time: event.source_create_time,
+        raw_content: event.raw_content,
+        parsed_content: event.parsed_content,
+        confidence: event.confidence
+      }
+      let changed = false
+      for (const [key, value] of Object.entries(updates)) {
+        if ((existing as Record<string, unknown>)[key] !== value) {
+          ;(existing as Record<string, unknown>)[key] = value
+          changed = true
+        }
+      }
+      if (changed) this.markSyncDirty(existing, now)
+      return changed
+    }
     data.rawEvents.push({
       id: event.id,
       event_type: 'invite',
@@ -757,8 +843,37 @@ class InviteStatsService {
     const dedupKey = event.dedup_key || this.buildRawDedupKey('quit', event)
     event.dedup_key = dedupKey
     const existing = data.rawEvents.find((item) => item.dedup_key === dedupKey)
-    if (existing) return false
     const now = this.nowSeconds()
+    if (existing) {
+      const updates: Partial<InviteRawEvent> = {
+        group_name: event.group_name,
+        member_name: event.user,
+        member_wxid: event.wx_id,
+        related_name: event.operator,
+        related_wxid: event.operator_wx_id,
+        quit_type: event.quit_type,
+        delete_flag: 1,
+        valid_flag: 0,
+        status: event.status,
+        exit_time: event.quit_time,
+        created_time: event.source_create_time || event.quit_time,
+        source_message_id: event.source_message_id,
+        source_local_id: event.source_local_id,
+        source_create_time: event.source_create_time,
+        raw_content: event.raw_content,
+        parsed_content: event.parsed_content,
+        confidence: event.confidence
+      }
+      let changed = false
+      for (const [key, value] of Object.entries(updates)) {
+        if ((existing as Record<string, unknown>)[key] !== value) {
+          ;(existing as Record<string, unknown>)[key] = value
+          changed = true
+        }
+      }
+      if (changed) this.markSyncDirty(existing, now)
+      return changed
+    }
     data.rawEvents.push({
       id: event.id,
       event_type: 'quit',
@@ -789,6 +904,11 @@ class InviteStatsService {
       updated_at: event.updated_at || now
     })
     return true
+  }
+
+  private syncRawEventsFromMaterialized(data: InviteStatsScopeData): void {
+    for (const event of data.inviteEvents) this.upsertRawEventFromInvite(data, event)
+    for (const event of data.quitEvents) this.upsertRawEventFromQuit(data, event)
   }
 
   private hasInviteEvent(data: InviteStatsScopeData, candidate: Partial<InviteEvent>): boolean {
@@ -849,14 +969,13 @@ class InviteStatsService {
   }
 
   private recomputeFlags(data: InviteStatsScopeData): void {
-    for (const event of data.inviteEvents) {
-      event.valid_flag = -1
-    }
-
+    const nextFlags = new Map<string, number>()
+    for (const event of data.inviteEvents) nextFlags.set(event.id, -1)
     const groupsByActivityUser = new Map<string, InviteEvent[]>()
     for (const event of data.inviteEvents) {
-      if (event.status !== 'confirmed' || !event.wx_id) continue
-      const key = `${event.activity_tag_id}:${this.cleanAccountDirName(event.wx_id)}`
+      const memberKey = this.getMemberKey(event)
+      if (event.status !== 'confirmed' || !memberKey) continue
+      const key = `${event.activity_tag_id}:${memberKey}`
       const list = groupsByActivityUser.get(key)
       if (list) list.push(event)
       else groupsByActivityUser.set(key, [event])
@@ -864,10 +983,7 @@ class InviteStatsService {
 
     for (const events of groupsByActivityUser.values()) {
       const hasActiveMembership = events.some((event) => event.delete_flag !== 1)
-      if (!hasActiveMembership) {
-        for (const event of events) event.valid_flag = -1
-        continue
-      }
+      if (!hasActiveMembership) continue
 
       const sorted = events.slice().sort((a, b) => {
         const inviteDiff = a.invite_time - b.invite_time
@@ -878,17 +994,27 @@ class InviteStatsService {
       })
       const validId = sorted[0]?.id
       for (const event of events) {
-        event.valid_flag = event.id === validId ? 1 : -1
+        nextFlags.set(event.id, event.id === validId ? 1 : -1)
       }
     }
+
+    for (const event of data.inviteEvents) {
+      const nextValidFlag = nextFlags.get(event.id) ?? -1
+      if (event.valid_flag !== nextValidFlag) {
+        event.valid_flag = nextValidFlag
+        this.markSyncDirty(event)
+      }
+    }
+    this.syncRawEventsFromMaterialized(data)
   }
 
   private applyQuitEventToInviteFlags(data: InviteStatsScopeData, quitEvent: QuitEvent): void {
-    if (quitEvent.status !== 'confirmed' || !quitEvent.wx_id) return
-    const wxId = this.cleanAccountDirName(quitEvent.wx_id)
+    if (quitEvent.status !== 'confirmed') return
+    const quitMemberKey = this.getMemberKey(quitEvent)
+    if (!quitMemberKey) return
     const related = data.inviteEvents.filter((event) =>
       event.activity_tag_id === quitEvent.activity_tag_id &&
-      this.cleanAccountDirName(event.wx_id) === wxId &&
+      this.getMemberKey(event) === quitMemberKey &&
       event.status === 'confirmed'
     )
     if (related.length === 0) return
@@ -1047,9 +1173,19 @@ class InviteStatsService {
     }, 0)
   }
 
+  private getMemberKey(event: {
+    wx_id?: string
+    user?: string
+    member_wxid?: string
+    member_name?: string
+  }): string {
+    return this.cleanAccountDirName(normalizeText(event.wx_id || event.member_wxid || '')) ||
+      normalizeIdentityText(event.user || event.member_name || '')
+  }
+
   private getEffectiveInviteEvents(data: InviteStatsScopeData, tagId: string): InviteEvent[] {
     return this.getScopedInviteEvents(data, tagId)
-      .filter((event) => event.status === 'confirmed' && event.valid_flag === 1 && event.wx_id)
+      .filter((event) => event.status === 'confirmed' && event.valid_flag === 1 && this.getMemberKey(event))
       .sort((a, b) => a.invite_time - b.invite_time)
   }
 
@@ -1096,7 +1232,7 @@ class InviteStatsService {
         groups: new Set<string>(),
         recent: 0
       }
-      bucket.users.add(this.cleanAccountDirName(event.wx_id) || event.user)
+      bucket.users.add(this.getMemberKey(event))
       bucket.groups.add(event.group_id)
       bucket.recent = Math.max(bucket.recent, event.invite_time)
       buckets.set(key, bucket)
@@ -1137,6 +1273,8 @@ class InviteStatsService {
 
   exportCurrentScopeSyncPayload(options: { dirtyOnly?: boolean } = {}): InviteRemoteSyncPayload {
     const data = this.getScope()
+    this.recomputeFlags(data)
+    this.persist()
     const accountScope = this.getCurrentScopeKey()
     const shouldInclude = (row: Record<string, any>) => !options.dirtyOnly || this.isSyncDirty(row)
 
@@ -1512,16 +1650,27 @@ class InviteStatsService {
   ): InviteStatsGroupRow[] {
     const bindingByGroupId = new Map(data.groupTagBindings.map((binding) => [binding.group_id, binding]))
     const tagById = new Map(data.activityTags.map((tag) => [tag.tag_id, tag]))
-    const todayJoinByGroupId = new Map<string, number>()
-    const todayQuitByGroupId = new Map<string, number>()
+    const activeMembersByGroupId = new Map<string, Set<string>>()
+    const todayJoinByGroupId = new Map<string, Set<string>>()
+    const todayQuitByGroupId = new Map<string, Set<string>>()
+    const addMember = (map: Map<string, Set<string>>, groupId: string, memberKey: string) => {
+      if (!memberKey) return
+      const bucket = map.get(groupId) || new Set<string>()
+      bucket.add(memberKey)
+      map.set(groupId, bucket)
+    }
 
     for (const event of data.inviteEvents) {
-      if (event.status !== 'confirmed' || event.invite_time < todayStart || event.invite_time > todayEnd) continue
-      todayJoinByGroupId.set(event.group_id, (todayJoinByGroupId.get(event.group_id) || 0) + 1)
+      if (event.status !== 'confirmed') continue
+      const memberKey = this.getMemberKey(event)
+      if (event.delete_flag !== 1) addMember(activeMembersByGroupId, event.group_id, memberKey)
+      if (event.invite_time >= todayStart && event.invite_time <= todayEnd) {
+        addMember(todayJoinByGroupId, event.group_id, memberKey)
+      }
     }
     for (const event of data.quitEvents) {
       if (event.status !== 'confirmed' || event.quit_time < todayStart || event.quit_time > todayEnd) continue
-      todayQuitByGroupId.set(event.group_id, (todayQuitByGroupId.get(event.group_id) || 0) + 1)
+      addMember(todayQuitByGroupId, event.group_id, this.getMemberKey(event))
     }
 
     return groups.map((group) => {
@@ -1531,9 +1680,9 @@ class InviteStatsService {
         group_id: group.username,
         group_name: group.displayName || group.username,
         avatar_url: group.avatarUrl,
-        member_count: group.memberCount || 0,
-        today_join_count: todayJoinByGroupId.get(group.username) || 0,
-        today_quit_count: todayQuitByGroupId.get(group.username) || 0,
+        member_count: activeMembersByGroupId.get(group.username)?.size || 0,
+        today_join_count: todayJoinByGroupId.get(group.username)?.size || 0,
+        today_quit_count: todayQuitByGroupId.get(group.username)?.size || 0,
         recent_invite_time: binding?.last_invite_time || 0,
         last_scan_time: binding?.last_scan_time || 0,
         tag_id: binding?.enabled ? binding.tag_id : '',
@@ -1683,28 +1832,30 @@ class InviteStatsService {
           if (this.activeScanState) this.activeScanState.scannedMessageCount = log.scanned_messages
 
           const parsedContent = this.normalizeSystemContent(message)
-          const parsed = this.parseSystemEvent(parsedContent)
-          if (!parsed) continue
+          const parsedEvents = this.parseSystemEvents(parsedContent)
+          if (parsedEvents.length === 0) continue
 
-          if (parsed.type === 'join') {
-            const event = this.buildInviteEvent(data, parsed, message, context, parsedContent)
-            this.upsertRawEventFromInvite(data, event)
-            if (!this.hasInviteEvent(data, event)) {
-              data.inviteEvents.push(event)
-              log.new_invites += 1
-              if (event.status === 'pending') log.pending_count += 1
-              lastInviteTime = Math.max(lastInviteTime, event.invite_time)
-              lastMessageId = event.source_message_id || lastMessageId
-            }
-          } else {
-            const event = this.buildQuitEvent(data, parsed, message, context, parsedContent)
-            this.upsertRawEventFromQuit(data, event)
-            if (!this.hasQuitEvent(data, event)) {
-              data.quitEvents.push(event)
-              log.new_quits += 1
-              if (event.status === 'pending') log.pending_count += 1
-              if (event.status === 'confirmed') this.applyQuitEventToInviteFlags(data, event)
-              lastMessageId = event.source_message_id || lastMessageId
+          for (const parsed of parsedEvents) {
+            if (parsed.type === 'join') {
+              const event = this.buildInviteEvent(data, parsed, message, context, parsedContent)
+              this.upsertRawEventFromInvite(data, event)
+              if (!this.hasInviteEvent(data, event)) {
+                data.inviteEvents.push(event)
+                log.new_invites += 1
+                if (event.status === 'pending') log.pending_count += 1
+                lastInviteTime = Math.max(lastInviteTime, event.invite_time)
+                lastMessageId = event.source_message_id || lastMessageId
+              }
+            } else {
+              const event = this.buildQuitEvent(data, parsed, message, context, parsedContent)
+              this.upsertRawEventFromQuit(data, event)
+              if (!this.hasQuitEvent(data, event)) {
+                data.quitEvents.push(event)
+                log.new_quits += 1
+                if (event.status === 'pending') log.pending_count += 1
+                if (event.status === 'confirmed') this.applyQuitEventToInviteFlags(data, event)
+                lastMessageId = event.source_message_id || lastMessageId
+              }
             }
           }
         }
@@ -1734,12 +1885,22 @@ class InviteStatsService {
     }
   }
 
-  async scanActivity(tagId: string): Promise<{ success: boolean; log?: InviteScanLog; error?: string }> {
-    if (this.scanPromise) return { success: false, error: '已有扫描任务正在运行' }
-    this.scanPromise = this.scanActivityInternal(tagId).finally(() => {
+  async scanActivity(tagId: string): Promise<{ success: boolean; started?: boolean; running?: boolean; log?: InviteScanLog; error?: string }> {
+    if (this.scanPromise) return { success: true, running: true, error: '已有扫描任务正在运行' }
+    const data = this.getScope()
+    const normalizedTagId = normalizeText(tagId)
+    const tag = data.activityTags.find((item) => item.tag_id === normalizedTagId && item.enabled)
+    if (!tag) return { success: false, error: '活动标签不存在或未启用' }
+    if (this.getEnabledBindingsForTag(data, normalizedTagId).length === 0) {
+      return { success: false, error: '当前活动标签没有绑定微信群' }
+    }
+    this.scanPromise = this.scanActivityInternal(normalizedTagId).catch((error) => ({
+      success: false,
+      error: error instanceof Error ? error.message : String(error)
+    })).finally(() => {
       this.scanPromise = null
     })
-    return this.scanPromise
+    return { success: true, started: true }
   }
 
   async getScanStatus(): Promise<{ success: boolean; data?: { running: boolean; active?: any; logs: InviteScanLog[] }; error?: string }> {
@@ -1776,10 +1937,15 @@ class InviteStatsService {
     const tagIds = data.activityTags
       .filter((tag) => tag.enabled && this.getEnabledBindingsForTag(data, tag.tag_id).length > 0)
       .map((tag) => tag.tag_id)
-    for (const tagId of tagIds) {
-      if (this.scanPromise) return
-      await this.scanActivity(tagId).catch(() => undefined)
-    }
+    if (tagIds.length === 0) return
+    this.scanPromise = (async () => {
+      for (const tagId of tagIds) {
+        await this.scanActivityInternal(tagId).catch(() => undefined)
+      }
+    })().finally(() => {
+      this.scanPromise = null
+    })
+    await this.scanPromise
   }
 
   startAutoScanScheduler(): void {
@@ -1832,29 +1998,28 @@ class InviteStatsService {
         : []
       const activeMemberCount = new Set(effective
         .filter((event) => event.delete_flag !== 1)
-        .map((event) => this.cleanAccountDirName(event.wx_id))
+        .map((event) => this.getMemberKey(event))
         .filter(Boolean)
       ).size
       const totalMembers = input.includeQuitMembers
-        ? new Set(scopedInviteEvents.filter((event) => event.status === 'confirmed' && event.wx_id).map((event) => this.cleanAccountDirName(event.wx_id))).size
-        : (activeMemberCount || groupRows.reduce((sum, group) => sum + group.member_count, 0))
+        ? new Set(scopedInviteEvents.filter((event) => event.status === 'confirmed').map((event) => this.getMemberKey(event)).filter(Boolean)).size
+        : activeMemberCount
 
       const todayNew = this.filterByTime(effective, todayStart, todayEnd)
-      const todayNewCount = new Set(todayNew.map((event) => this.cleanAccountDirName(event.wx_id))).size
+      const todayNewCount = new Set(todayNew.map((event) => this.getMemberKey(event)).filter(Boolean)).size
       const todayQuit = scopedQuitEvents.filter((event) =>
         event.status === 'confirmed' &&
         event.quit_time >= todayStart &&
         event.quit_time <= todayEnd
       )
       const todayQuitCount = new Set(todayQuit.map((event) => {
-        const wxId = this.cleanAccountDirName(event.wx_id)
-        return wxId || `${event.group_id}:${event.user}:${event.quit_time}`
+        return this.getMemberKey(event) || `${event.group_id}:${event.user}:${event.quit_time}`
       })).size
       const activeBotCount = normalizeText(this.configService.getMyWxidCleaned()) ? 1 : 0
 
       const hourlyBuckets: Record<number, number> = {}
       for (let hour = 0; hour < 24; hour += 1) hourlyBuckets[hour] = 0
-      for (const event of todayNew) {
+      for (const event of effective) {
         const hour = this.getBeijingHour(event.invite_time)
         hourlyBuckets[hour] = (hourlyBuckets[hour] || 0) + 1
       }
