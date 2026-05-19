@@ -52,6 +52,7 @@ type GroupTagBinding = {
   activity_tag_id?: string
   enabled?: boolean
   member_count?: number | null
+  raw_json?: unknown
 }
 
 type DashboardFilters = {
@@ -142,6 +143,7 @@ export async function getDashboard(filters: DashboardFilters): Promise<Dashboard
         return {
           eventType: rowIsQuit ? 'quit' as const : 'invite' as const,
           memberName: memberName(row),
+          avatarUrl: memberAvatarUrl(row),
           sourceName,
           sourceLabel,
           groupName: groupName(row),
@@ -268,7 +270,7 @@ async function loadFinalEvents(tagId?: string) {
 
 async function loadGroupBindings(tagId?: string) {
   const query: Record<string, string | number> = {
-    select: 'group_id,group_name,activity_tag_id,enabled,member_count',
+    select: 'group_id,group_name,activity_tag_id,enabled,member_count,raw_json',
     enabled: 'eq.true',
     limit: 10000
   }
@@ -303,7 +305,8 @@ function buildGroupsFromEvents(events: FinalStatEvent[]): GroupOption[] {
   events.forEach(row => {
     const id = String(row.group_id || row.group_name || '')
     if (!id) return
-    groups.set(id, { id, name: groupName(row) })
+    const current = groups.get(id)
+    groups.set(id, { id, name: groupName(row), avatarUrl: current?.avatarUrl || '' })
   })
   return Array.from(groups.values()).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
 }
@@ -313,7 +316,7 @@ function buildGroupsFromBindings(bindings: GroupTagBinding[]): GroupOption[] {
   bindings.forEach(row => {
     const id = String(row.group_id || row.group_name || '')
     if (!id) return
-    groups.set(id, { id, name: bindingGroupName(row) })
+    groups.set(id, { id, name: bindingGroupName(row), avatarUrl: groupAvatarUrl(row) })
   })
   return Array.from(groups.values()).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
 }
@@ -461,6 +464,16 @@ function memberAvatarUrl(row: FinalStatEvent) {
     rawJson?.head_img ||
     rawJson?.avatar_url ||
     rawJson?.avatarUrl ||
+    ''
+  ).trim()
+}
+
+function groupAvatarUrl(row: GroupTagBinding) {
+  const rawJson = rawJsonRecord(row.raw_json)
+  return String(
+    rawJson?.avatar_url ||
+    rawJson?.avatarUrl ||
+    rawJson?.head_img ||
     ''
   ).trim()
 }

@@ -30,6 +30,7 @@ export interface InviteGroupTagBinding {
   id: string
   group_id: string
   group_name: string
+  avatar_url?: string
   tag_id: string
   tag_name: string
   enabled: boolean
@@ -210,6 +211,7 @@ interface MatchResult {
   candidates: Array<{ wxId: string; displayName: string; avatarUrl?: string }>
   status: InviteEventStatus
   reason: string
+  matchedMember?: GroupMember
 }
 
 interface GroupContext {
@@ -608,7 +610,8 @@ class InviteStatsService {
       avatarUrl: member?.avatarUrl || '',
       candidates: [],
       status: 'confirmed',
-      reason: member ? 'current-account-group-match' : 'current-account-config'
+      reason: member ? 'current-account-group-match' : 'current-account-config',
+      matchedMember: member
     }
   }
 
@@ -645,7 +648,8 @@ class InviteStatsService {
         avatarUrl: manualMember?.avatarUrl || '',
         candidates: [],
         status: 'confirmed',
-        reason: 'manual-binding'
+        reason: 'manual-binding',
+        matchedMember: manualMember
       }
     }
 
@@ -662,7 +666,8 @@ class InviteStatsService {
         avatarUrl: member.avatarUrl || '',
         candidates: [],
         status: 'confirmed',
-        reason: 'unique-group-match'
+        reason: 'unique-group-match',
+        matchedMember: member
       }
     }
 
@@ -981,9 +986,63 @@ class InviteStatsService {
     })
   }
 
+  private ensureMemberAliasBindings(
+    data: InviteStatsScopeData,
+    groupId: string,
+    member: GroupMember | undefined,
+    source: 'auto' | 'manual' = 'auto'
+  ): void {
+    if (!member?.username) return
+    for (const displayName of this.getMemberDisplayFields(member)) {
+      this.ensureIdentityBinding(data, groupId, displayName, member.username, source)
+    }
+  }
+
+  private hydrateEventIdentityBindings(data: InviteStatsScopeData): boolean {
+    let changed = false
+    const now = this.nowSeconds()
+    for (const event of data.inviteEvents) {
+      if (!event.wx_id) {
+        const wxId = this.findManualBinding(data, event.group_id, event.user)
+        if (wxId) {
+          event.wx_id = wxId
+          this.markSyncDirty(event, now)
+          changed = true
+        }
+      }
+      if (!event.inviter_wx_id && event.inviter && event.inviter !== '未知来源') {
+        const inviterWxId = this.findManualBinding(data, event.group_id, event.inviter)
+        if (inviterWxId) {
+          event.inviter_wx_id = inviterWxId
+          this.markSyncDirty(event, now)
+          changed = true
+        }
+      }
+    }
+    for (const event of data.quitEvents) {
+      if (!event.wx_id) {
+        const wxId = this.findManualBinding(data, event.group_id, event.user)
+        if (wxId) {
+          event.wx_id = wxId
+          this.markSyncDirty(event, now)
+          changed = true
+        }
+      }
+      if (!event.operator_wx_id && event.operator) {
+        const operatorWxId = this.findManualBinding(data, event.group_id, event.operator)
+        if (operatorWxId) {
+          event.operator_wx_id = operatorWxId
+          this.markSyncDirty(event, now)
+          changed = true
+        }
+      }
+    }
+    return changed
+  }
+
   private recomputeFlags(data: InviteStatsScopeData): boolean {
     const nextFlags = new Map<string, number>()
-    let changed = false
+    let changed = this.hydrateEventIdentityBindings(data)
     for (const event of data.inviteEvents) nextFlags.set(event.id, -1)
     const groupsByActivityUser = new Map<string, InviteEvent[]>()
     for (const event of data.inviteEvents) {
@@ -1061,13 +1120,26 @@ class InviteStatsService {
   }
 
   private refreshBindingMemberCounts(data: InviteStatsScopeData, groups: GroupChatInfo[], now = this.nowSeconds()): boolean {
-    const countByGroupId = new Map(groups.map((group) => [group.username, this.normalizeMemberCount(group.memberCount)]))
+    const groupById = new Map(groups.map((group) => [group.username, group]))
     let changed = false
     for (const binding of data.groupTagBindings) {
-      const nextCount = countByGroupId.get(binding.group_id)
-      if (typeof nextCount !== 'number') continue
+      const group = groupById.get(binding.group_id)
+      if (!group) continue
+      const nextCount = this.normalizeMemberCount(group.memberCount)
+      const nextName = normalizeText(group.displayName || group.username || binding.group_name || binding.group_id)
+      const nextAvatarUrl = normalizeText(group.avatarUrl)
       if (typeof binding.member_count !== 'number' || this.normalizeMemberCount(binding.member_count) !== nextCount) {
         binding.member_count = nextCount
+        this.markSyncDirty(binding, now)
+        changed = true
+      }
+      if (nextName && binding.group_name !== nextName) {
+        binding.group_name = nextName
+        this.markSyncDirty(binding, now)
+        changed = true
+      }
+      if (nextAvatarUrl && binding.avatar_url !== nextAvatarUrl) {
+        binding.avatar_url = nextAvatarUrl
         this.markSyncDirty(binding, now)
         changed = true
       }
@@ -1112,8 +1184,10 @@ class InviteStatsService {
 
     if (status === 'confirmed') {
       this.ensureIdentityBinding(data, context.groupId, parsed.user, userMatch.wxId, 'auto')
+      this.ensureMemberAliasBindings(data, context.groupId, userMatch.matchedMember, 'auto')
       if (inviterRaw && inviterRaw !== '未知来源' && inviterMatch.wxId) {
         this.ensureIdentityBinding(data, context.groupId, inviterRaw, inviterMatch.wxId, 'auto')
+        this.ensureMemberAliasBindings(data, context.groupId, inviterMatch.matchedMember, 'auto')
       }
     }
 
@@ -1168,8 +1242,10 @@ class InviteStatsService {
 
     if (status === 'confirmed') {
       this.ensureIdentityBinding(data, context.groupId, parsed.user, userMatch.wxId, 'auto')
+      this.ensureMemberAliasBindings(data, context.groupId, userMatch.matchedMember, 'auto')
       if (operatorRaw && operatorMatch.wxId) {
         this.ensureIdentityBinding(data, context.groupId, operatorRaw, operatorMatch.wxId, 'auto')
+        this.ensureMemberAliasBindings(data, context.groupId, operatorMatch.matchedMember, 'auto')
       }
     }
 
@@ -1778,6 +1854,7 @@ class InviteStatsService {
       if (existing) {
         const previousTagId = existing.tag_id
         existing.group_name = groupName
+        existing.avatar_url = groupInfo?.avatarUrl || existing.avatar_url || ''
         existing.tag_id = tag.tag_id
         existing.tag_name = tag.tag_name
         existing.enabled = true
@@ -1792,6 +1869,7 @@ class InviteStatsService {
           id: randomUUID(),
           group_id: normalizedGroupId,
           group_name: groupName,
+          avatar_url: groupInfo?.avatarUrl || '',
           tag_id: tag.tag_id,
           tag_name: tag.tag_name,
           enabled: true,
@@ -2291,6 +2369,11 @@ class InviteStatsService {
     const statusFilter = normalizeText(filters.statusFilter)
     const attributionFilter = normalizeText(filters.attributionFilter)
     const invitedCountMap = tagId ? this.getInvitedCountByInviter(data, tagId) : new Map<string, number>()
+    const groupNameById = new Map(
+      data.groupTagBindings
+        .filter((binding) => binding.enabled)
+        .map((binding) => [binding.group_id, binding.group_name || binding.group_id] as const)
+    )
     const rows: MemberTraceRow[] = []
 
     for (const event of data.inviteEvents) {
@@ -2301,7 +2384,7 @@ class InviteStatsService {
         wx_id: event.wx_id,
         inviter: event.inviter,
         inviter_wx_id: event.inviter_wx_id,
-        group_name: event.group_name,
+        group_name: groupNameById.get(event.group_id) || event.group_name || event.group_id,
         group_id: event.group_id,
         activity_tag_id: event.activity_tag_id,
         activity_tag_name: event.activity_tag_name,
@@ -2329,7 +2412,7 @@ class InviteStatsService {
           wx_id: event.wx_id,
           inviter: '',
           inviter_wx_id: '',
-          group_name: event.group_name,
+          group_name: groupNameById.get(event.group_id) || event.group_name || event.group_id,
           group_id: event.group_id,
           activity_tag_id: event.activity_tag_id,
           activity_tag_name: event.activity_tag_name,
@@ -2388,7 +2471,9 @@ class InviteStatsService {
   async getMemberTrace(filters: MemberTraceFilters): Promise<{ success: boolean; data?: { rows: MemberTraceRow[]; total: number }; error?: string }> {
     try {
       const data = this.getScope()
-      if (this.recomputeFlags(data)) this.persist()
+      let changed = this.recomputeFlags(data)
+      changed = await this.refreshBindingMemberCountsFromSource(data) || changed
+      if (changed) this.persist()
       const offset = Math.max(0, Number(filters.offset || 0))
       const limit = Math.min(500, Math.max(1, Number(filters.limit || 100)))
       const rows = this.buildMemberTraceRows(data, filters)
@@ -2401,7 +2486,9 @@ class InviteStatsService {
   async listPending(filters: { tagId?: string } = {}): Promise<{ success: boolean; data?: MemberTraceRow[]; error?: string }> {
     try {
       const data = this.getScope()
-      if (this.recomputeFlags(data)) this.persist()
+      let changed = this.recomputeFlags(data)
+      changed = await this.refreshBindingMemberCountsFromSource(data) || changed
+      if (changed) this.persist()
       const rows = this.buildMemberTraceRows(data, {
         tagId: filters.tagId,
         includeQuit: true,
@@ -2434,7 +2521,7 @@ class InviteStatsService {
           event.inviter_wx_id = normalizeText(payload.inviterWxId)
           this.ensureIdentityBinding(data, event.group_id, event.inviter, event.inviter_wx_id, 'manual')
         }
-        event.status = event.wx_id ? 'confirmed' : 'pending'
+        event.status = 'confirmed'
         this.markSyncDirty(event, now)
       } else {
         const event = data.quitEvents.find((item) => item.id === payload.eventId)
@@ -2447,7 +2534,7 @@ class InviteStatsService {
           event.operator_wx_id = normalizeText(payload.operatorWxId)
           this.ensureIdentityBinding(data, event.group_id, event.operator, event.operator_wx_id, 'manual')
         }
-        event.status = event.wx_id ? 'confirmed' : 'pending'
+        event.status = 'confirmed'
         this.markSyncDirty(event, now)
         if (event.status === 'confirmed') this.applyQuitEventToInviteFlags(data, event)
       }

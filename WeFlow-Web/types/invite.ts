@@ -6,6 +6,7 @@ export type ActivityTag = {
 export type GroupOption = {
   id: string
   name: string
+  avatarUrl?: string
 }
 
 export type InviteRankingRow = {
@@ -28,6 +29,7 @@ export type HourlyDistributionRow = {
 export type RecentActivity = {
   eventType: 'invite' | 'quit'
   memberName: string
+  avatarUrl?: string
   sourceName: string
   sourceLabel: string
   groupName: string

@@ -240,6 +240,7 @@ export default function RemoteViewerPage() {
       index: index + 1,
       groupId: group.id,
       groupName: group.name,
+      avatarUrl: group.avatarUrl,
       count: counts.get(group.id) || 0
     }))
   }, [dashboard.groupRanking, dashboard.groups])
@@ -398,7 +399,9 @@ export default function RemoteViewerPage() {
                     <div className="activity-list">
                       {dashboard.recentActivities.map((row, index) => (
                         <div className="activity-item" key={`${row.memberName}-${row.time}-${index}`}>
-                          <div className="avatar">{row.memberName.slice(0, 1) || '成'}</div>
+                          <div className="avatar">
+                            {row.avatarUrl ? <img src={row.avatarUrl} alt="" referrerPolicy="no-referrer" /> : <span>{row.memberName.slice(0, 1) || '成'}</span>}
+                          </div>
                           <div className="activity-main">
                             <strong>{row.memberName}</strong>
                             <span>{row.sourceLabel} · {row.sourceName}<br />{row.groupName}</span>
@@ -471,8 +474,15 @@ export default function RemoteViewerPage() {
                           <tr key={row.groupId}>
                             <td>{row.index}</td>
                             <td>
-                              <span className="member-name">{row.groupName}</span>
-                              <span className="wxid">{row.groupId}</span>
+                              <div className="group-cell">
+                                <div className="avatar group-avatar">
+                                  {row.avatarUrl ? <img src={row.avatarUrl} alt="" referrerPolicy="no-referrer" /> : <span>{row.groupName.slice(0, 1) || '群'}</span>}
+                                </div>
+                                <div>
+                                  <span className="member-name">{row.groupName}</span>
+                                  <span className="wxid">{row.groupId}</span>
+                                </div>
+                              </div>
                             </td>
                             <td>{formatNumber(row.count)}</td>
                             <td>
@@ -598,7 +608,7 @@ function TraceRow({ row, onRaw }: { row: MemberTraceRow; onRaw: (raw: string) =>
       <td>
         <div className="trace-member">
           <div className="avatar trace-avatar">
-            {row.avatarUrl ? <img src={row.avatarUrl} alt="" /> : <span>{row.memberName.slice(0, 1) || '成'}</span>}
+            {row.avatarUrl ? <img src={row.avatarUrl} alt="" referrerPolicy="no-referrer" /> : <span>{row.memberName.slice(0, 1) || '成'}</span>}
           </div>
           <div>
             <span className="member-name">{row.memberName}</span>

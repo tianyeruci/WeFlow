@@ -591,6 +591,24 @@ textarea:focus {
   width: 136px;
 }
 
+.group-cell {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.group-avatar {
+  width: 36px;
+  height: 36px;
+  background: linear-gradient(135deg, #3778e5, #59b8ad);
+}
+
+.group-cell > div:last-child {
+  min-width: 0;
+}
+
 .row-export {
   min-width: 100px;
   min-height: 32px;

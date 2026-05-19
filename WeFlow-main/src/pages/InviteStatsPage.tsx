@@ -661,8 +661,6 @@ function InviteStatsPage() {
   }
 
   const markPendingValid = async (row: InviteMemberTraceRow) => {
-    const wxId = window.prompt('成员 wxid', row.wx_id || '')
-    if (wxId === null) return
     const payload: {
       eventType: 'invite' | 'quit'
       eventId: string
@@ -672,17 +670,13 @@ function InviteStatsPage() {
     } = {
       eventType: row.event_type,
       eventId: row.id,
-      wxId: wxId.trim() || undefined
+      wxId: row.wx_id || undefined
     }
-    if (row.event_type === 'invite' && row.inviter && row.join_type === 'invite') {
-      const inviterWxId = window.prompt('邀请人 wxid，可留空', row.inviter_wx_id || '')
-      if (inviterWxId === null) return
-      payload.inviterWxId = inviterWxId.trim() || undefined
+    if (row.event_type === 'invite' && row.inviter_wx_id) {
+      payload.inviterWxId = row.inviter_wx_id
     }
-    if (row.event_type === 'quit' && row.operator) {
-      const operatorWxId = window.prompt('操作人 wxid，可留空', row.operator_wx_id || '')
-      if (operatorWxId === null) return
-      payload.operatorWxId = operatorWxId.trim() || undefined
+    if (row.event_type === 'quit' && row.operator_wx_id) {
+      payload.operatorWxId = row.operator_wx_id
     }
     const result = await window.electronAPI.inviteStats.confirmPending(payload)
     if (!result.success) {
