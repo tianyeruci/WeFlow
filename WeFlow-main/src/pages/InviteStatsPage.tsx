@@ -25,6 +25,7 @@ import {
 import type {
   InviteActivityTag,
   InviteDashboardData,
+  InviteManualRecordPayload,
   InviteMemberTraceFilters,
   InviteMemberTraceRow,
   InviteScanLog,
@@ -36,6 +37,15 @@ import './InviteStatsPage.scss'
 type ViewKey = 'dashboard' | 'groups' | 'trace' | 'pending'
 type ChartMode = 'bar' | 'pie'
 type GroupSortKey = 'member_count' | 'today_join_count' | 'today_quit_count' | 'last_scan_time' | 'recent_invite_time'
+type ManualInviteMode = 'confirm' | 'add'
+
+type ManualInviteFormState = {
+  groupId: string
+  user: string
+  wxId: string
+  inviter: string
+  inviterWxId: string
+}
 
 const viewItems: Array<{ key: ViewKey; label: string; icon: typeof BarChart3 }> = [
   { key: 'dashboard', label: '数据大屏', icon: BarChart3 },
@@ -244,6 +254,15 @@ function InviteStatsPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [isDashboardLoading, setIsDashboardLoading] = useState(false)
   const [rawPreview, setRawPreview] = useState<InviteMemberTraceRow | null>(null)
+  const [manualInviteDialog, setManualInviteDialog] = useState<{ mode: ManualInviteMode; row: InviteMemberTraceRow } | null>(null)
+  const [manualInviteForm, setManualInviteForm] = useState<ManualInviteFormState>({
+    groupId: '',
+    user: '',
+    wxId: '',
+    inviter: '',
+    inviterWxId: ''
+  })
+  const [isSavingManualInvite, setIsSavingManualInvite] = useState(false)
   const [createTagDialogOpen, setCreateTagDialogOpen] = useState(false)
   const [createTagName, setCreateTagName] = useState('')
   const [isCreatingTag, setIsCreatingTag] = useState(false)
@@ -484,6 +503,86 @@ function InviteStatsPage() {
     }
   }, [selectedTagId, showToast])
 
+  const openManualInviteDialog = useCallback((
+    row: InviteMemberTraceRow,
+    mode: ManualInviteMode,
+    memberName?: string
+  ) => {
+    const fallbackGroup = groups.find((group) => group.tag_id === selectedTagId && group.binding_enabled)
+    const contextMember = (row.source_context_members || []).find((name) => name && name !== row.user)
+    setManualInviteDialog({ mode, row })
+    setManualInviteForm({
+      groupId: row.group_id || fallbackGroup?.group_id || '',
+      user: mode === 'add' ? (memberName || contextMember || '') : (row.user || ''),
+      wxId: mode === 'add' ? '' : (row.wx_id || ''),
+      inviter: row.inviter || '',
+      inviterWxId: row.inviter_wx_id || ''
+    })
+  }, [groups, selectedTagId])
+
+  const closeManualInviteDialog = useCallback(() => {
+    if (isSavingManualInvite) return
+    setManualInviteDialog(null)
+    setManualInviteForm({
+      groupId: '',
+      user: '',
+      wxId: '',
+      inviter: '',
+      inviterWxId: ''
+    })
+  }, [isSavingManualInvite])
+
+  const submitManualInviteForm = useCallback(async () => {
+    if (!manualInviteDialog) return
+    const groupId = manualInviteForm.groupId.trim()
+    const wxId = manualInviteForm.wxId.trim()
+    const inviterWxId = manualInviteForm.inviterWxId.trim()
+    const user = manualInviteForm.user.trim()
+    const inviter = manualInviteForm.inviter.trim()
+    const requiresInviterWxId = manualInviteDialog.mode === 'add' || (inviter && inviter !== '未知来源')
+    if (!groupId || !wxId || (requiresInviterWxId && !inviterWxId) || (manualInviteDialog.mode === 'add' && (!user || !inviter))) {
+      showToast(manualInviteDialog.mode === 'add' ? '请补齐新增记录所需的信息' : '请补齐群 ID、被邀请人微信 ID')
+      return
+    }
+
+    setIsSavingManualInvite(true)
+    try {
+      const row = manualInviteDialog.row
+      const result = manualInviteDialog.mode === 'confirm'
+        ? await window.electronAPI.inviteStats.confirmPending({
+          eventType: 'invite',
+          eventId: row.id,
+          groupId,
+          wxId,
+          inviterWxId
+        })
+        : await window.electronAPI.inviteStats.addManualInviteRecord({
+          sourceEventId: row.id,
+          tagId: selectedTagId || row.activity_tag_id,
+          groupId,
+          user,
+          wxId,
+          inviter,
+          inviterWxId,
+          inviteTime: row.event_time
+        } satisfies InviteManualRecordPayload)
+
+      if (!result.success) {
+        showToast(result.error || '补充信息保存失败')
+        return
+      }
+      showToast(manualInviteDialog.mode === 'confirm' ? '待确认邀请已标记有效' : '补充邀请记录已添加')
+      setManualInviteDialog(null)
+      await Promise.all([
+        loadPending(),
+        loadDashboard(),
+        loadTrace()
+      ])
+    } finally {
+      setIsSavingManualInvite(false)
+    }
+  }, [loadDashboard, loadPending, loadTrace, manualInviteDialog, manualInviteForm, selectedTagId, showToast])
+
   useEffect(() => {
     void refreshMeta()
   }, [])
@@ -661,21 +760,27 @@ function InviteStatsPage() {
   }
 
   const markPendingValid = async (row: InviteMemberTraceRow) => {
+    if (row.event_type === 'invite') {
+      openManualInviteDialog(row, 'confirm')
+      return
+    }
     const payload: {
       eventType: 'invite' | 'quit'
       eventId: string
+      groupId?: string
       wxId?: string
       inviterWxId?: string
       operatorWxId?: string
     } = {
       eventType: row.event_type,
       eventId: row.id,
+      groupId: row.group_id || undefined,
       wxId: row.wx_id || undefined
     }
-    if (row.event_type === 'invite' && row.inviter_wx_id) {
+    if (row.inviter_wx_id) {
       payload.inviterWxId = row.inviter_wx_id
     }
-    if (row.event_type === 'quit' && row.operator_wx_id) {
+    if (row.operator_wx_id) {
       payload.operatorWxId = row.operator_wx_id
     }
     const result = await window.electronAPI.inviteStats.confirmPending(payload)
@@ -686,6 +791,7 @@ function InviteStatsPage() {
     showToast('记录已标记为有效')
     await loadPending()
     await loadDashboard()
+    await loadTrace()
   }
 
   const markPendingInvalid = async (row: InviteMemberTraceRow) => {
@@ -817,6 +923,7 @@ function InviteStatsPage() {
   const groupRankRows = (dashboard?.groupRanking || []).slice(0, 6)
   const maxGroupMemberCount = Math.max(1, ...groupRankRows.map((group) => Number(group.member_count || 0)))
   const canManageTags = activeView === 'groups'
+  const manualSelectedGroupExists = tagGroups.some((group) => group.group_id === manualInviteForm.groupId)
 
   return (
     <div className="invite-stats-page">
@@ -1245,11 +1352,30 @@ function InviteStatsPage() {
                     <span>{formatTime(row.event_time)}</span>
                     <span>置信度 {Math.round((row.confidence || 0) * 100)}%</span>
                   </div>
+                  {row.source_context_members && row.source_context_members.length > 0 && (
+                    <div className="invite-pending-context">
+                      {row.source_context_members.map((name) => (
+                        <button
+                          key={name}
+                          type="button"
+                          onClick={() => openManualInviteDialog(row, 'add', name)}
+                          title="用该成员补充一条邀请记录"
+                        >
+                          {name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div className="invite-pending-actions">
                   <button className="invite-primary-btn" onClick={() => void markPendingValid(row)}>
                     <Check size={15} />有效
                   </button>
+                  {row.event_type === 'invite' && (
+                    <button type="button" onClick={() => openManualInviteDialog(row, 'add')}>
+                      <Plus size={15} />添加信息
+                    </button>
+                  )}
                   <button className="invite-invalid-btn" onClick={() => void markPendingInvalid(row)}>
                     <Ban size={15} />无效
                   </button>
@@ -1259,6 +1385,98 @@ function InviteStatsPage() {
             {pendingRows.length === 0 && <div className="invite-empty-inline">没有待确认记录</div>}
           </div>
         </section>
+      )}
+
+      {manualInviteDialog && (
+        <div className="invite-modal-mask" role="dialog" aria-modal="true" aria-label="补充邀请信息" onMouseDown={closeManualInviteDialog}>
+          <form
+            className="invite-manual-modal"
+            onMouseDown={(event) => event.stopPropagation()}
+            onSubmit={(event) => {
+              event.preventDefault()
+              void submitManualInviteForm()
+            }}
+          >
+            <div className="invite-modal-title">
+              <div>
+                <h2>{manualInviteDialog.mode === 'confirm' ? '补充有效邀请' : '添加邀请信息'}</h2>
+                <p>{manualInviteDialog.mode === 'confirm' ? '补齐微信 ID 后，这条待确认记录会进入真实统计。' : '从这条背景消息拆出一条真实邀请记录，并参与统计。'}</p>
+              </div>
+              <button type="button" onClick={closeManualInviteDialog} title="关闭" disabled={isSavingManualInvite}>
+                <X size={16} />
+              </button>
+            </div>
+            <div className="invite-manual-source">
+              <strong>{manualInviteDialog.row.raw_content || '无原始消息'}</strong>
+              <span>{manualInviteDialog.row.group_name} · {formatTime(manualInviteDialog.row.event_time)}</span>
+            </div>
+            <div className="invite-manual-grid">
+              <label className="invite-manual-field">
+                <span>群 ID</span>
+                <select
+                  value={manualInviteForm.groupId}
+                  onChange={(event) => setManualInviteForm((prev) => ({ ...prev, groupId: event.target.value }))}
+                  disabled={isSavingManualInvite}
+                >
+                  {!manualSelectedGroupExists && manualInviteForm.groupId && (
+                    <option value={manualInviteForm.groupId}>{manualInviteForm.groupId}</option>
+                  )}
+                  <option value="">请选择群</option>
+                  {tagGroups.map((group) => (
+                    <option key={group.group_id} value={group.group_id}>
+                      {group.group_name || group.group_id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="invite-manual-field">
+                <span>被邀请人</span>
+                <input
+                  value={manualInviteForm.user}
+                  onChange={(event) => setManualInviteForm((prev) => ({ ...prev, user: event.target.value }))}
+                  placeholder="成员昵称"
+                  disabled={isSavingManualInvite || manualInviteDialog.mode === 'confirm'}
+                />
+              </label>
+              <label className="invite-manual-field">
+                <span>被邀请人微信 ID</span>
+                <input
+                  value={manualInviteForm.wxId}
+                  onChange={(event) => setManualInviteForm((prev) => ({ ...prev, wxId: event.target.value }))}
+                  placeholder="wxid_xxx"
+                  disabled={isSavingManualInvite}
+                />
+              </label>
+              <label className="invite-manual-field">
+                <span>邀请人</span>
+                <input
+                  value={manualInviteForm.inviter}
+                  onChange={(event) => setManualInviteForm((prev) => ({ ...prev, inviter: event.target.value }))}
+                  placeholder="邀请人昵称"
+                  disabled={isSavingManualInvite || manualInviteDialog.mode === 'confirm'}
+                />
+              </label>
+              <label className="invite-manual-field">
+                <span>邀请人微信 ID</span>
+                <input
+                  value={manualInviteForm.inviterWxId}
+                  onChange={(event) => setManualInviteForm((prev) => ({ ...prev, inviterWxId: event.target.value }))}
+                  placeholder="wxid_xxx"
+                  disabled={isSavingManualInvite}
+                />
+              </label>
+            </div>
+            <div className="invite-modal-actions">
+              <button type="button" onClick={closeManualInviteDialog} disabled={isSavingManualInvite}>
+                取消
+              </button>
+              <button className="invite-primary-btn" type="submit" disabled={isSavingManualInvite}>
+                {isSavingManualInvite ? <Loader2 size={16} className="spin" /> : <Check size={16} />}
+                <span>{manualInviteDialog.mode === 'confirm' ? '保存为有效' : '添加信息'}</span>
+              </button>
+            </div>
+          </form>
+        </div>
       )}
 
       {createTagDialogOpen && (

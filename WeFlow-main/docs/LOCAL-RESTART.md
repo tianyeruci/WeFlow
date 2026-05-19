@@ -155,3 +155,9 @@ Get-WmiObject Win32_Process: Access denied
 - 验证方式：`netstat -ano | Select-String ':3000|:3001|:5173|:4173'`
 - 成功状态：`[::1]:3000` 处于 `LISTENING`
 - 本次新坑：`Stop-Process` 没有清掉旧实例，最终改用 `taskkill` 才完成重启
+
+## 本次重启补充
+
+- 重启前旧实例里有两个 `node` 进程，PID 分别是 `120` 和 `556`。
+- 先停掉旧进程，再重新执行 `npm run dev`，新的监听 PID 是 `22376`。
+- 启动日志里已经出现 `built in ... ms`，说明这次重新编译和拉起是成功的。

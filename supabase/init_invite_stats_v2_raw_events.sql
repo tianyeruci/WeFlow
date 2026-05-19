@@ -353,6 +353,7 @@ select
   re.member_name,
   re.member_wxid as wx_id,
   re.member_wxid as wxid,
+  coalesce(re.raw_json->>'head_img', re.raw_json->>'avatar_url', re.raw_json->>'avatarUrl', '') as head_img,
   case when re.event_type = 'invite' then re.related_name else null end as inviter,
   case when re.event_type = 'invite' then re.related_name else null end as inviter_name,
   case when re.event_type = 'invite' then re.related_wxid else null end as inviter_wxid,
@@ -372,7 +373,8 @@ select
   re.parsed_content,
   re.source_message_id,
   re.source_local_id,
-  re.source_create_time
+  re.source_create_time,
+  re.raw_json
 from raw_events re
 join group_tag_bindings gtb
   on gtb.account_scope = re.account_scope

@@ -3658,11 +3658,25 @@ function registerIpcHandlers() {
   ipcMain.handle('inviteStats:confirmPending', async (_, payload: {
     eventType: 'invite' | 'quit'
     eventId: string
+    groupId?: string
     wxId?: string
     inviterWxId?: string
     operatorWxId?: string
   }) => {
     return inviteStatsService.confirmPending(payload)
+  })
+
+  ipcMain.handle('inviteStats:addManualInviteRecord', async (_, payload: {
+    sourceEventId?: string
+    tagId: string
+    groupId: string
+    user: string
+    wxId: string
+    inviter: string
+    inviterWxId: string
+    inviteTime?: number
+  }) => {
+    return inviteStatsService.addManualInviteRecord(payload)
   })
 
   ipcMain.handle('inviteStats:ignorePending', async (_, payload: { eventType: 'invite' | 'quit'; eventId: string }) => {

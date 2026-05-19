@@ -459,10 +459,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
     confirmPending: (payload: {
       eventType: 'invite' | 'quit'
       eventId: string
+      groupId?: string
       wxId?: string
       inviterWxId?: string
       operatorWxId?: string
     }) => ipcRenderer.invoke('inviteStats:confirmPending', payload),
+    addManualInviteRecord: (payload: {
+      sourceEventId?: string
+      tagId: string
+      groupId: string
+      user: string
+      wxId: string
+      inviter: string
+      inviterWxId: string
+      inviteTime?: number
+    }) => ipcRenderer.invoke('inviteStats:addManualInviteRecord', payload),
     ignorePending: (payload: { eventType: 'invite' | 'quit'; eventId: string }) =>
       ipcRenderer.invoke('inviteStats:ignorePending', payload),
     exportInviteRanking: (payload: any) => ipcRenderer.invoke('inviteStats:exportInviteRanking', payload),

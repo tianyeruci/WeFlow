@@ -249,8 +249,22 @@ export interface InviteMemberTraceRow {
   delete_flag: number
   valid_flag: number
   raw_content: string
+  parsed_content?: string
+  source_rule?: string
+  source_context_members?: string[]
   status: 'confirmed' | 'pending' | 'ignored'
   confidence: number
+}
+
+export interface InviteManualRecordPayload {
+  sourceEventId?: string
+  tagId: string
+  groupId: string
+  user: string
+  wxId: string
+  inviter: string
+  inviterWxId: string
+  inviteTime?: number
 }
 
 export interface InviteScanLog {
@@ -1090,10 +1104,12 @@ export interface ElectronAPI {
     confirmPending: (payload: {
       eventType: 'invite' | 'quit'
       eventId: string
+      groupId?: string
       wxId?: string
       inviterWxId?: string
       operatorWxId?: string
     }) => Promise<InviteStatsResult>
+    addManualInviteRecord: (payload: InviteManualRecordPayload) => Promise<InviteStatsResult<InviteMemberTraceRow>>
     ignorePending: (payload: { eventType: 'invite' | 'quit'; eventId: string }) => Promise<InviteStatsResult>
     exportInviteRanking: (payload: {
       filePath: string
