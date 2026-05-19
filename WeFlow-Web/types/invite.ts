@@ -57,6 +57,7 @@ export type TraceAttribution = 'valid' | 'invalid' | 'pending' | 'none'
 export type MemberTraceRow = {
   id: string
   memberName: string
+  avatarUrl?: string
   wxid: string
   source: string
   groupId: string

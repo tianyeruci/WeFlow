@@ -3625,6 +3625,13 @@ function registerIpcHandlers() {
     return inviteStatsService.scanActivity(tagId)
   })
 
+  ipcMain.handle('inviteStats:checkQuitGroups', async (_, tagIdOrPayload: string | { tagId?: string }) => {
+    const tagId = typeof tagIdOrPayload === 'object'
+      ? String(tagIdOrPayload?.tagId || '')
+      : String(tagIdOrPayload || '')
+    return inviteStatsService.checkQuitGroups(tagId)
+  })
+
   ipcMain.handle('inviteStats:getScanStatus', async () => {
     return inviteStatsService.getScanStatus()
   })
@@ -4298,7 +4305,9 @@ app.whenReady().then(async () => {
   })
   messagePushService.start()
   insightService.start()
+  inviteStatsService.setAfterScanSuccessCallback(() => inviteStatsSyncService.queueSync())
   inviteStatsService.startAutoScanScheduler()
+  inviteStatsService.startAutoQuitCheckScheduler()
   inviteStatsSyncService.startAutoSyncScheduler()
   void inviteStatsSyncService.queueSync()
   await delay(200)

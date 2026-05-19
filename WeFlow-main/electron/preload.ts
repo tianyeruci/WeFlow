@@ -444,6 +444,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     setGroupTag: (groupId: string, tagId: string) => ipcRenderer.invoke('inviteStats:setGroupTag', groupId, tagId),
     clearGroupTag: (groupId: string) => ipcRenderer.invoke('inviteStats:clearGroupTag', groupId),
     scanActivity: (tagId: string) => ipcRenderer.invoke('inviteStats:scanActivity', tagId),
+    checkQuitGroups: (tagId: string) => ipcRenderer.invoke('inviteStats:checkQuitGroups', tagId),
     getScanStatus: () => ipcRenderer.invoke('inviteStats:getScanStatus'),
     getDashboard: (input: {
       tagId: string

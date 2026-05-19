@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import ReactECharts from 'echarts-for-react'
 import {
   AlertTriangle,
+  Ban,
   BarChart3,
   Check,
   Clock,
@@ -17,6 +18,7 @@ import {
   Sparkles,
   Tags,
   Trash2,
+  Upload,
   Users,
   X
 } from 'lucide-react'
@@ -117,17 +119,24 @@ const statusLabel = (value?: string): string => {
   return value || '-'
 }
 
+const scanModeLabel = (value?: string): string => {
+  if (value === 'quit-check') return '检查是否退出群'
+  return '增量扫描'
+}
+
+const isTraceQuitRow = (row: InviteMemberTraceRow): boolean => {
+  return row.status !== 'ignored' && (row.event_type === 'quit' || row.delete_flag === 1)
+}
+
 const traceStatusLabel = (row: InviteMemberTraceRow): string => {
-  if (row.status === 'ignored') return '已忽略'
-  if (row.status !== 'confirmed') return '待确认'
-  if (row.event_type === 'quit' || row.delete_flag === 1) return '已退出群'
+  if (row.status === 'pending') return '待确认'
+  if (isTraceQuitRow(row)) return '已退出群'
   return '未退出群'
 }
 
 const traceStatusClass = (row: InviteMemberTraceRow): string => {
-  if (row.status === 'ignored') return 'ignored'
-  if (row.status !== 'confirmed') return 'pending'
-  if (row.event_type === 'quit' || row.delete_flag === 1) return 'quit'
+  if (row.status === 'pending') return 'pending'
+  if (isTraceQuitRow(row)) return 'quit'
   return 'active'
 }
 
@@ -274,6 +283,21 @@ function InviteStatsPage() {
     setRemoteSyncDialogOpen(true)
   }, [])
 
+  const resolveRemoteSyncOptions = useCallback(async () => {
+    const cachedEndpoint = remoteSyncUrl.trim()
+    const cachedToken = remoteSyncToken.trim()
+    if (cachedEndpoint && cachedToken) {
+      return { endpoint: cachedEndpoint, token: cachedToken }
+    }
+
+    const config = await window.electronAPI.inviteStats.getRemoteSyncConfig()
+    const endpoint = cachedEndpoint || config.endpoint || ''
+    const token = cachedToken || config.token || ''
+    if (!cachedEndpoint && config.endpoint) setRemoteSyncUrl(config.endpoint)
+    if (!cachedToken && config.token) setRemoteSyncToken(config.token)
+    return { endpoint: endpoint.trim(), token: token.trim() }
+  }, [remoteSyncToken, remoteSyncUrl])
+
   const saveRemoteSyncSettings = async () => {
     setIsSavingRemoteSync(true)
     try {
@@ -288,24 +312,22 @@ function InviteStatsPage() {
     }
   }
 
-  const syncRemoteNow = async () => {
+  const syncRemoteNow = async (closeDialog = true) => {
     setIsRemoteSyncing(true)
     try {
+      const options = await resolveRemoteSyncOptions()
       await Promise.all([
-        configService.setInviteRemoteSyncUrl(remoteSyncUrl),
-        configService.setInviteRemoteSyncToken(remoteSyncToken)
+        configService.setInviteRemoteSyncUrl(options.endpoint),
+        configService.setInviteRemoteSyncToken(options.token)
       ])
-      const result = await window.electronAPI.inviteStats.syncRemote({
-        endpoint: remoteSyncUrl.trim(),
-        token: remoteSyncToken.trim()
-      })
+      const result = await window.electronAPI.inviteStats.syncRemote(options)
       if (!result.success) {
         showToast(result.error || '远程同步失败')
         return
       }
       const total = Object.values(result.counts || {}).reduce((sum, count) => sum + Number(count || 0), 0)
       showToast(total > 0 ? `远程同步完成：${total} 条变更` : '远程同步完成，暂无新变更')
-      setRemoteSyncDialogOpen(false)
+      if (closeDialog) setRemoteSyncDialogOpen(false)
     } finally {
       setIsRemoteSyncing(false)
     }
@@ -556,6 +578,23 @@ function InviteStatsPage() {
     if (activeView === 'pending') await loadPending()
   }
 
+  const checkQuitSelectedTag = async () => {
+    if (!selectedTagId || isScanning) return
+    setIsScanning(true)
+    const result = await window.electronAPI.inviteStats.checkQuitGroups(selectedTagId)
+    if (!result.success) {
+      showToast(result.error || '退出群检查失败')
+      setIsScanning(false)
+      await refreshMeta(selectedTagId)
+      return
+    }
+    showToast(result.running ? '已有扫描任务正在运行' : '退出群检查已开始，后台异步执行')
+    await refreshMeta(selectedTagId)
+    await loadDashboard()
+    if (activeView === 'trace') await loadTrace()
+    if (activeView === 'pending') await loadPending()
+  }
+
   const updateGroupTag = async (groupId: string, tagId: string) => {
     const result = tagId
       ? await window.electronAPI.inviteStats.setGroupTag(groupId, tagId)
@@ -621,7 +660,7 @@ function InviteStatsPage() {
     showToast(result.success ? `已导出 ${result.count || 0} 条原始事件` : (result.error || '导出失败'))
   }
 
-  const confirmPending = async (row: InviteMemberTraceRow) => {
+  const markPendingValid = async (row: InviteMemberTraceRow) => {
     const wxId = window.prompt('成员 wxid', row.wx_id || '')
     if (wxId === null) return
     const payload: {
@@ -647,24 +686,24 @@ function InviteStatsPage() {
     }
     const result = await window.electronAPI.inviteStats.confirmPending(payload)
     if (!result.success) {
-      showToast(result.error || '确认失败')
+      showToast(result.error || '标记有效失败')
       return
     }
-    showToast('记录已确认')
+    showToast('记录已标记为有效')
     await loadPending()
     await loadDashboard()
   }
 
-  const ignorePending = async (row: InviteMemberTraceRow) => {
+  const markPendingInvalid = async (row: InviteMemberTraceRow) => {
     const result = await window.electronAPI.inviteStats.ignorePending({
       eventType: row.event_type,
       eventId: row.id
     })
     if (!result.success) {
-      showToast(result.error || '忽略失败')
+      showToast(result.error || '标记无效失败')
       return
     }
-    showToast('记录已忽略')
+    showToast('记录已标记为无效')
     await loadPending()
     await loadDashboard()
   }
@@ -776,7 +815,7 @@ function InviteStatsPage() {
 
   const cards = dashboard?.cards
   const latestLog = scanLogs[0]
-  const latestScanModeLabel = '增量扫描'
+  const latestScanModeLabel = scanModeLabel(latestLog?.scan_mode)
   const latestScanText = latestLog
     ? `${latestScanModeLabel} · ${formatShortTime(latestLog.finished_at || latestLog.started_at)} · ${statusLabel(latestLog.status)}`
     : '尚未扫描'
@@ -846,6 +885,14 @@ function InviteStatsPage() {
             <button className="invite-primary-btn" onClick={() => void scanSelectedTag()} disabled={!selectedTagId || isScanning}>
               {isScanning ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}
               <span>{isScanning ? '扫描中' : '增量扫描'}</span>
+            </button>
+            <button className="invite-sync-now-btn" onClick={() => void syncRemoteNow(false)} disabled={isRemoteSyncing || isResettingInviteStats}>
+              {isRemoteSyncing ? <Loader2 size={16} className="spin" /> : <Upload size={16} />}
+              <span>{isRemoteSyncing ? '同步中' : '同步本地数据'}</span>
+            </button>
+            <button className="invite-quit-check-btn" onClick={() => void checkQuitSelectedTag()} disabled={!selectedTagId || isScanning}>
+              {isScanning ? <Loader2 size={16} className="spin" /> : <Search size={16} />}
+              <span>检查是否退出群</span>
             </button>
           </div>
           {canManageTags && (
@@ -985,7 +1032,7 @@ function InviteStatsPage() {
                       <div className="invite-activity-avatar">{row.head_img ? <img src={row.head_img} alt="" /> : <Clock size={15} />}</div>
                       <div>
                         <strong>{row.user || '未知成员'}</strong>
-                        <span>{row.event_type === 'invite' ? `${joinTypeLabel(row.join_type)} · ${row.inviter || '未知来源'}` : quitTypeLabel(row.quit_type)}</span>
+                        <span>{isTraceQuitRow(row) ? '已退出群' : row.event_type === 'invite' ? `${joinTypeLabel(row.join_type)} · ${row.inviter || '未知来源'}` : quitTypeLabel(row.quit_type)}</span>
                         <em>{row.group_name}</em>
                       </div>
                       <time>{formatShortTime(row.event_time)}</time>
@@ -1152,9 +1199,14 @@ function InviteStatsPage() {
                 {traceRows.map((row) => (
                   <tr key={`${row.event_type}-${row.id}`}>
                     <td>
-                      <div className="invite-member-cell">
-                        <strong>{row.user || '未知成员'}</strong>
-                        <span>{row.wx_id || '未匹配 wxid'}</span>
+                      <div className="invite-trace-member-cell">
+                        <div className="invite-avatar">
+                          {row.head_img ? <img src={row.head_img} alt="" /> : <span>{(row.user || '成').slice(0, 1)}</span>}
+                        </div>
+                        <div className="invite-member-cell">
+                          <strong>{row.user || '未知成员'}</strong>
+                          <span>{row.wx_id || '未匹配 wxid'}</span>
+                        </div>
                       </div>
                     </td>
                     <td>{row.event_type === 'invite' ? `${joinTypeLabel(row.join_type)} · ${row.inviter || '未知来源'}` : quitTypeLabel(row.quit_type)}</td>
@@ -1201,11 +1253,11 @@ function InviteStatsPage() {
                   </div>
                 </div>
                 <div className="invite-pending-actions">
-                  <button className="invite-primary-btn" onClick={() => void confirmPending(row)}>
-                    <Check size={15} />保存确认
+                  <button className="invite-primary-btn" onClick={() => void markPendingValid(row)}>
+                    <Check size={15} />有效
                   </button>
-                  <button onClick={() => void ignorePending(row)}>
-                    <X size={15} />忽略
+                  <button className="invite-invalid-btn" onClick={() => void markPendingInvalid(row)}>
+                    <Ban size={15} />无效
                   </button>
                 </div>
               </article>

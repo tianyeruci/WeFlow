@@ -25,6 +25,8 @@ type FinalStatEvent = {
   member_name?: string
   wx_id?: string
   wxid?: string
+  head_img?: string | null
+  avatar_url?: string | null
   inviter?: string
   inviter_name?: string
   inviter_wx_id?: string
@@ -40,6 +42,8 @@ type FinalStatEvent = {
   delete_flag?: number
   raw_content?: string
   source_raw_content?: string
+  raw_json?: unknown
+  updated_at?: string | null
 }
 
 type GroupTagBinding = {
@@ -112,10 +116,13 @@ export async function getDashboard(filters: DashboardFilters): Promise<Dashboard
     cards: {
       activeRobots: 0,
       monitoredGroups: groups.length,
-      totalMembers: countUniqueMembers(effectiveInviteEvents.filter(row => row.delete_flag !== 1)),
+      totalMembers: countUniqueMembers(inviteEvents.filter(row => row.delete_flag !== 1)),
       totalMembersWithQuit: countUniqueMembers(inviteEvents),
       todayNew: countUniqueMembers(effectiveInviteEvents.filter(row => isToday(row.invite_time))),
-      todayQuit: countUniqueMembers(quitEvents.filter(row => isToday(eventTime(row)))),
+      todayQuit: countUniqueMembers([
+        ...quitEvents.filter(row => isToday(eventTime(row))),
+        ...inviteEvents.filter(row => row.delete_flag === 1 && isToday(eventTime(row)))
+      ]),
       pendingCount: events.filter(row => row.status === 'pending').length
     },
     groups,
@@ -126,14 +133,21 @@ export async function getDashboard(filters: DashboardFilters): Promise<Dashboard
       .slice()
       .sort((a, b) => timeValue(eventTime(b)) - timeValue(eventTime(a)))
       .slice(0, 9)
-      .map(row => ({
-        eventType: isQuitEvent(row) ? 'quit' as const : 'invite' as const,
-        memberName: memberName(row),
-        sourceName: isQuitEvent(row) ? operatorName(row) : inviterName(row),
-        sourceLabel: isQuitEvent(row) ? quitTypeText(row.quit_type) : joinTypeText(row),
-        groupName: groupName(row),
-        time: eventTime(row)
-      }))
+      .map(row => {
+        const rowIsQuit = isQuitEvent(row) || row.delete_flag === 1
+        const sourceName = isQuitEvent(row) ? operatorName(row) : row.delete_flag === 1 ? '自动检查' : inviterName(row)
+        const sourceLabel = rowIsQuit
+          ? isQuitEvent(row) ? quitTypeText(row.quit_type) : '已退出群'
+          : joinTypeText(row)
+        return {
+          eventType: rowIsQuit ? 'quit' as const : 'invite' as const,
+          memberName: memberName(row),
+          sourceName,
+          sourceLabel,
+          groupName: groupName(row),
+          time: eventTime(row)
+        }
+      })
   }
 }
 
@@ -144,20 +158,20 @@ export async function getMemberTrace(filters: TraceFilters): Promise<MemberTrace
 
   const rows = events
     .filter(row => {
-      const eventTime = row.invite_time || row.exit_time || row.created_time || null
+      const traceEventTime = eventTime(row)
       const traceStatus = toTraceStatus(row)
       const traceAttribution = toTraceAttribution(row)
 
       if (!isVisibleForTrace(row)) return false
       if (filters.groupId && String(row.group_id || '') !== filters.groupId) return false
       if (keyword && !memberName(row).toLowerCase().includes(keyword)) return false
-      if (!withinRange(eventTime, filters.startTime, filters.endTime)) return false
+      if (!withinRange(traceEventTime, filters.startTime, filters.endTime)) return false
       if (filters.status && traceStatus !== filters.status) return false
       if (filters.attribution && traceAttribution !== filters.attribution) return false
       if (filters.includeQuit === false && traceStatus === 'quit') return false
       return true
     })
-    .sort((a, b) => timeValue(b.invite_time || b.exit_time || b.created_time) - timeValue(a.invite_time || a.exit_time || a.created_time))
+    .sort((a, b) => timeValue(eventTime(b)) - timeValue(eventTime(a)))
     .map(toMemberTraceRow)
 
   return { rows, total: rows.length, groups }
@@ -281,7 +295,7 @@ function isEffectiveInviteEvent(row: FinalStatEvent) {
 }
 
 function isVisibleForTrace(row: FinalStatEvent) {
-  return row.status !== 'ignored'
+  return row.status !== 'deleted'
 }
 
 function buildGroupsFromEvents(events: FinalStatEvent[]): GroupOption[] {
@@ -391,6 +405,7 @@ function toMemberTraceRow(row: FinalStatEvent): MemberTraceRow {
   return {
     id: String(row.event_id || row.id || `${row.group_id || ''}-${memberKey(row)}-${eventTime(row) || ''}`),
     memberName: memberName(row),
+    avatarUrl: memberAvatarUrl(row),
     wxid: String(row.wx_id || row.wxid || ''),
     source: `${sourcePrefix} · ${sourceName}`,
     groupId: String(row.group_id || ''),
@@ -404,12 +419,13 @@ function toMemberTraceRow(row: FinalStatEvent): MemberTraceRow {
 
 function toTraceStatus(row: FinalStatEvent): TraceStatus {
   if (row.status === 'pending') return 'pending'
-  if (row.delete_flag === 1 || isQuitEvent(row) || row.exit_time) return 'quit'
+  if (row.status !== 'ignored' && (row.delete_flag === 1 || isQuitEvent(row) || row.exit_time)) return 'quit'
   return 'active'
 }
 
 function toTraceAttribution(row: FinalStatEvent): TraceAttribution {
   if (row.status === 'pending') return 'pending'
+  if (row.status === 'ignored') return 'invalid'
   if (!isInviteEvent(row)) return 'none'
   if (row.valid_flag === -1) return 'invalid'
   return 'valid'
@@ -431,7 +447,34 @@ function isToday(value?: string | null) {
 }
 
 function eventTime(row: FinalStatEvent) {
+  if (isInviteEvent(row) && row.delete_flag === 1) {
+    return row.updated_at || row.exit_time || row.invite_time || row.created_time || null
+  }
   return row.invite_time || row.exit_time || row.created_time || null
+}
+
+function memberAvatarUrl(row: FinalStatEvent) {
+  const rawJson = rawJsonRecord(row.raw_json)
+  return String(
+    row.head_img ||
+    row.avatar_url ||
+    rawJson?.head_img ||
+    rawJson?.avatar_url ||
+    rawJson?.avatarUrl ||
+    ''
+  ).trim()
+}
+
+function rawJsonRecord(value: unknown): AnyRecord | null {
+  if (!value) return null
+  if (typeof value === 'object' && !Array.isArray(value)) return value as AnyRecord
+  if (typeof value !== 'string') return null
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as AnyRecord : null
+  } catch {
+    return null
+  }
 }
 
 function joinTypeText(row: FinalStatEvent) {

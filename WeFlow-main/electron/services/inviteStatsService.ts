@@ -12,7 +12,7 @@ type InviteEventStatus = 'confirmed' | 'pending' | 'ignored'
 type JoinType = 'invite' | 'qrcode' | 'direct' | 'unknown'
 type QuitType = 'self_quit' | 'removed' | 'unknown'
 type ScanStatus = 'running' | 'completed' | 'failed' | 'skipped'
-type ScanMode = 'incremental'
+type ScanMode = 'incremental' | 'quit-check'
 type ExportFormat = 'csv' | 'xlsx'
 
 export interface InviteActivityTag {
@@ -316,6 +316,8 @@ class InviteStatsService {
   } | null = null
   private autoScanTimer: ReturnType<typeof setInterval> | null = null
   private autoScanStarted = false
+  private autoQuitCheckTimer: ReturnType<typeof setTimeout> | null = null
+  private autoQuitCheckStarted = false
   private afterScanSuccess: (() => void | Promise<void>) | null = null
 
   constructor() {
@@ -575,6 +577,14 @@ class InviteStatsService {
       member.alias,
       member.username
     ].map(normalizeText).filter(Boolean)
+  }
+
+  private getGroupMemberIdentityKeys(member: GroupMember): string[] {
+    const keys = [
+      this.cleanAccountDirName(normalizeText(member.username)),
+      ...this.getMemberDisplayFields(member).map(normalizeIdentityText)
+    ].filter(Boolean)
+    return Array.from(new Set(keys))
   }
 
   private matchCurrentAccountMember(members: GroupMember[], fallbackDisplayName: string): MatchResult {
@@ -1213,6 +1223,11 @@ class InviteStatsService {
       normalizeIdentityText(event.user || event.member_name || '')
   }
 
+  private getInviteEventTimelineTime(event: InviteEvent): number {
+    if (event.delete_flag === 1) return event.updated_at || event.invite_time || 0
+    return event.invite_time || 0
+  }
+
   private getEffectiveInviteEvents(data: InviteStatsScopeData, tagId: string): InviteEvent[] {
     return this.getScopedInviteEvents(data, tagId)
       .filter((event) => event.status === 'confirmed' && event.valid_flag === 1 && this.getMemberKey(event))
@@ -1697,6 +1712,10 @@ class InviteStatsService {
       if (event.invite_time >= todayStart && event.invite_time <= todayEnd) {
         addMember(todayJoinByGroupId, event.group_id, memberKey)
       }
+      const traceTime = this.getInviteEventTimelineTime(event)
+      if (event.delete_flag === 1 && traceTime >= todayStart && traceTime <= todayEnd) {
+        addMember(todayQuitByGroupId, event.group_id, memberKey)
+      }
     }
     for (const event of data.quitEvents) {
       if (event.status !== 'confirmed' || event.quit_time < todayStart || event.quit_time > todayEnd) continue
@@ -1921,6 +1940,92 @@ class InviteStatsService {
     }
   }
 
+  private async checkQuitGroupsInternal(tagId: string): Promise<{ success: boolean; log?: InviteScanLog; error?: string }> {
+    const data = this.getScope()
+    const tag = data.activityTags.find((item) => item.tag_id === tagId && item.enabled)
+    if (!tag) return { success: false, error: '活动标签不存在或未启用' }
+    const bindings = this.getEnabledBindingsForTag(data, tagId)
+    if (bindings.length === 0) return { success: false, error: '当前活动标签没有绑定微信群' }
+
+    const startedAt = this.nowSeconds()
+    const log: InviteScanLog = {
+      id: randomUUID(),
+      tag_id: tag.tag_id,
+      tag_name: tag.tag_name,
+      scan_mode: 'quit-check',
+      status: 'running',
+      started_at: startedAt,
+      finished_at: 0,
+      scanned_groups: bindings.length,
+      scanned_messages: 0,
+      new_invites: 0,
+      new_quits: 0,
+      pending_count: 0,
+      error: '',
+      sync_status: 'dirty',
+      sync_error: '',
+      last_sync_at: 0
+    }
+    data.scanLogs.unshift(log)
+    data.scanLogs = data.scanLogs.slice(0, this.maxScanLogsPerScope)
+    this.activeScanState = {
+      tagId: tag.tag_id,
+      tagName: tag.tag_name,
+      scanMode: 'quit-check',
+      startedAt,
+      groupCount: bindings.length,
+      scannedMessageCount: 0
+    }
+    this.persist()
+
+    try {
+      for (const binding of bindings) {
+        const membersResult = await groupAnalyticsService.getGroupMembers(binding.group_id)
+        if (!membersResult.success || !Array.isArray(membersResult.data) || membersResult.data.length === 0) continue
+
+        const currentMemberKeys = new Set<string>()
+        for (const member of membersResult.data) {
+          for (const key of this.getGroupMemberIdentityKeys(member)) currentMemberKeys.add(key)
+        }
+        if (currentMemberKeys.size === 0) continue
+
+        const now = this.nowSeconds()
+        const groupInviteEvents = data.inviteEvents.filter((event) =>
+          event.activity_tag_id === tagId &&
+          event.group_id === binding.group_id &&
+          event.status === 'confirmed'
+        )
+        for (const event of groupInviteEvents) {
+          const memberKey = this.getMemberKey(event)
+          if (!memberKey || currentMemberKeys.has(memberKey) || event.delete_flag === 1) continue
+          event.delete_flag = 1
+          this.markSyncDirty(event, now)
+          log.new_quits += 1
+        }
+
+        binding.last_scan_time = now
+        this.markSyncDirty(binding, now)
+      }
+
+      this.recomputeFlags(data)
+      log.status = 'completed'
+      log.finished_at = this.nowSeconds()
+      this.markSyncDirty(log, log.finished_at)
+      this.persist()
+      this.notifyAfterScanSuccess()
+      return { success: true, log }
+    } catch (error) {
+      log.status = 'failed'
+      log.finished_at = this.nowSeconds()
+      log.error = String(error)
+      this.markSyncDirty(log, log.finished_at)
+      this.persist()
+      return { success: false, log, error: String(error) }
+    } finally {
+      this.activeScanState = null
+    }
+  }
+
   async scanActivity(tagId: string): Promise<{ success: boolean; started?: boolean; running?: boolean; log?: InviteScanLog; error?: string }> {
     if (this.scanPromise) return { success: true, running: true, error: '已有扫描任务正在运行' }
     const data = this.getScope()
@@ -1931,6 +2036,24 @@ class InviteStatsService {
       return { success: false, error: '当前活动标签没有绑定微信群' }
     }
     this.scanPromise = this.scanActivityInternal(normalizedTagId).catch((error) => ({
+      success: false,
+      error: error instanceof Error ? error.message : String(error)
+    })).finally(() => {
+      this.scanPromise = null
+    })
+    return { success: true, started: true }
+  }
+
+  async checkQuitGroups(tagId: string): Promise<{ success: boolean; started?: boolean; running?: boolean; log?: InviteScanLog; error?: string }> {
+    if (this.scanPromise) return { success: true, running: true, error: '已有扫描任务正在运行' }
+    const data = this.getScope()
+    const normalizedTagId = normalizeText(tagId)
+    const tag = data.activityTags.find((item) => item.tag_id === normalizedTagId && item.enabled)
+    if (!tag) return { success: false, error: '活动标签不存在或未启用' }
+    if (this.getEnabledBindingsForTag(data, normalizedTagId).length === 0) {
+      return { success: false, error: '当前活动标签没有绑定微信群' }
+    }
+    this.scanPromise = this.checkQuitGroupsInternal(normalizedTagId).catch((error) => ({
       success: false,
       error: error instanceof Error ? error.message : String(error)
     })).finally(() => {
@@ -1984,6 +2107,31 @@ class InviteStatsService {
     await this.scanPromise
   }
 
+  async runBackgroundQuitCheck(): Promise<void> {
+    if (this.scanPromise) return
+    const data = this.getScope()
+    const tagIds = data.activityTags
+      .filter((tag) => tag.enabled && this.getEnabledBindingsForTag(data, tag.tag_id).length > 0)
+      .map((tag) => tag.tag_id)
+    if (tagIds.length === 0) return
+    this.scanPromise = (async () => {
+      for (const tagId of tagIds) {
+        await this.checkQuitGroupsInternal(tagId).catch(() => undefined)
+      }
+    })().finally(() => {
+      this.scanPromise = null
+    })
+    await this.scanPromise
+  }
+
+  private getNextBeijingMidnightDelayMs(nowMs = Date.now()): number {
+    const dayMs = 24 * 60 * 60 * 1000
+    const beijingOffsetMs = 8 * 60 * 60 * 1000
+    const beijingNowMs = nowMs + beijingOffsetMs
+    const nextBeijingMidnightMs = Math.floor(beijingNowMs / dayMs) * dayMs + dayMs
+    return Math.max(1_000, nextBeijingMidnightMs - beijingNowMs)
+  }
+
   startAutoScanScheduler(): void {
     if (this.autoScanStarted) return
     this.autoScanStarted = true
@@ -2001,6 +2149,27 @@ class InviteStatsService {
     if (this.autoScanTimer) clearInterval(this.autoScanTimer)
     this.autoScanTimer = null
     this.autoScanStarted = false
+  }
+
+  startAutoQuitCheckScheduler(): void {
+    if (this.autoQuitCheckStarted) return
+    this.autoQuitCheckStarted = true
+    const scheduleNext = () => {
+      const timer = setTimeout(async () => {
+        this.autoQuitCheckTimer = null
+        await this.runBackgroundQuitCheck()
+        if (this.autoQuitCheckStarted) scheduleNext()
+      }, this.getNextBeijingMidnightDelayMs())
+      if (typeof timer.unref === 'function') timer.unref()
+      this.autoQuitCheckTimer = timer
+    }
+    scheduleNext()
+  }
+
+  stopAutoQuitCheckScheduler(): void {
+    if (this.autoQuitCheckTimer) clearTimeout(this.autoQuitCheckTimer)
+    this.autoQuitCheckTimer = null
+    this.autoQuitCheckStarted = false
   }
 
   async getDashboard(input: {
@@ -2035,8 +2204,8 @@ class InviteStatsService {
             return this.buildGroupRows(data, groupsResult.data, todayStart, todayEnd).filter((row) => bindingGroupIds.has(row.group_id))
           })()
         : []
-      const activeMemberCount = new Set(effective
-        .filter((event) => event.delete_flag !== 1)
+      const activeMemberCount = new Set(scopedInviteEvents
+        .filter((event) => event.status === 'confirmed' && event.delete_flag !== 1)
         .map((event) => this.getMemberKey(event))
         .filter(Boolean)
       ).size
@@ -2046,14 +2215,17 @@ class InviteStatsService {
 
       const todayNew = this.filterByTime(effective, todayStart, todayEnd)
       const todayNewCount = new Set(todayNew.map((event) => this.getMemberKey(event)).filter(Boolean)).size
-      const todayQuit = scopedQuitEvents.filter((event) =>
-        event.status === 'confirmed' &&
-        event.quit_time >= todayStart &&
-        event.quit_time <= todayEnd
-      )
-      const todayQuitCount = new Set(todayQuit.map((event) => {
-        return this.getMemberKey(event) || `${event.group_id}:${event.user}:${event.quit_time}`
-      })).size
+      const todayQuitMembers = new Set<string>()
+      for (const event of scopedQuitEvents) {
+        if (event.status !== 'confirmed' || event.quit_time < todayStart || event.quit_time > todayEnd) continue
+        todayQuitMembers.add(this.getMemberKey(event) || `${event.group_id}:${event.user}:${event.quit_time}`)
+      }
+      for (const event of scopedInviteEvents) {
+        const traceTime = this.getInviteEventTimelineTime(event)
+        if (event.status !== 'confirmed' || event.delete_flag !== 1 || traceTime < todayStart || traceTime > todayEnd) continue
+        todayQuitMembers.add(this.getMemberKey(event) || `${event.group_id}:${event.user}:${traceTime}`)
+      }
+      const todayQuitCount = todayQuitMembers.size
       const activeBotCount = normalizeText(this.configService.getMyWxidCleaned()) ? 1 : 0
 
       const hourlyBuckets: Record<number, number> = {}
@@ -2138,7 +2310,7 @@ class InviteStatsService {
         quit_type: '',
         operator: '',
         operator_wx_id: '',
-        event_time: event.invite_time,
+        event_time: this.getInviteEventTimelineTime(event),
         delete_flag: event.delete_flag,
         valid_flag: event.valid_flag,
         status: event.status,
@@ -2184,8 +2356,10 @@ class InviteStatsService {
         if (wxId && this.cleanAccountDirName(row.wx_id) !== wxId) return false
         if (filters.startTime && row.event_time < filters.startTime) return false
         if (filters.endTime && row.event_time > filters.endTime) return false
-        if (statusFilter === 'active' && (row.event_type !== 'invite' || row.status !== 'confirmed' || row.delete_flag === 1)) return false
-        if (statusFilter === 'quit' && row.delete_flag !== 1 && row.event_type !== 'quit') return false
+        const rowIsQuit = row.status !== 'ignored' && (row.delete_flag === 1 || row.event_type === 'quit')
+        const rowIsActive = row.status !== 'pending' && !rowIsQuit
+        if (statusFilter === 'active' && !rowIsActive) return false
+        if (statusFilter === 'quit' && !rowIsQuit) return false
         if (statusFilter === 'pending' && row.status !== 'pending') return false
         if (attributionFilter === 'valid' && (row.event_type !== 'invite' || row.status !== 'confirmed' || row.valid_flag !== 1)) return false
         if (attributionFilter === 'invalid') {
@@ -2350,7 +2524,7 @@ class InviteStatsService {
         row.group_name,
         row.group_id,
         this.formatTime(row.event_time),
-        row.status === 'ignored' ? '已忽略' : row.status !== 'confirmed' ? '待确认' : (row.event_type === 'quit' || row.delete_flag === 1 ? '已退出群' : '未退出群'),
+        row.status === 'pending' ? '待确认' : (row.status !== 'ignored' && (row.event_type === 'quit' || row.delete_flag === 1) ? '已退出群' : '未退出群'),
         row.status === 'ignored' ? '无效' : row.status !== 'confirmed' ? '待确认' : row.event_type !== 'invite' ? '-' : row.valid_flag === 1 ? '有效' : row.valid_flag === -1 ? '无效' : '-',
         row.join_type || row.quit_type
       ])

@@ -257,7 +257,7 @@ export interface InviteScanLog {
   id: string
   tag_id: string
   tag_name: string
-  scan_mode?: 'incremental'
+  scan_mode?: 'incremental' | 'quit-check'
   status: 'running' | 'completed' | 'failed' | 'skipped'
   started_at: number
   finished_at: number
@@ -1075,6 +1075,7 @@ export interface ElectronAPI {
     setGroupTag: (groupId: string, tagId: string) => Promise<InviteStatsResult>
     clearGroupTag: (groupId: string) => Promise<InviteStatsResult>
     scanActivity: (tagId: string) => Promise<{ success: boolean; started?: boolean; running?: boolean; log?: InviteScanLog; error?: string }>
+    checkQuitGroups: (tagId: string) => Promise<{ success: boolean; started?: boolean; running?: boolean; log?: InviteScanLog; error?: string }>
     getScanStatus: () => Promise<InviteStatsResult<{ running: boolean; active?: any; logs: InviteScanLog[] }>>
     getDashboard: (input: {
       tagId: string

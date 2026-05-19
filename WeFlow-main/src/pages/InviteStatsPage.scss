@@ -243,7 +243,7 @@
 
 .invite-scan-actions {
   display: grid;
-  grid-template-columns: 150px;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
   gap: 10px;
 
   button {
@@ -263,6 +263,31 @@
   background: #fff0f0 !important;
   color: #c84144 !important;
   font-weight: 900;
+}
+
+.invite-sync-now-btn,
+.invite-quit-check-btn {
+  border-color: rgba(59, 130, 246, 0.22);
+  background: #f8fbff;
+  color: var(--invite-blue);
+  font-weight: 900;
+
+  &:hover:not(:disabled) {
+    border-color: rgba(59, 130, 246, 0.38);
+    background: #eef5ff;
+    transform: translateY(-1px);
+  }
+}
+
+.invite-quit-check-btn {
+  border-color: rgba(25, 183, 155, 0.26);
+  background: #f2fcfa;
+  color: #0d8f7a;
+
+  &:hover:not(:disabled) {
+    border-color: rgba(25, 183, 155, 0.42);
+    background: #e5fbf6;
+  }
 }
 
 .invite-create-tag-btn {
@@ -873,6 +898,15 @@
   height: 36px;
   background: #edf4ff;
   color: var(--invite-blue);
+  font-weight: 900;
+}
+
+.invite-trace-member-cell {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
 }
 
 .invite-member-cell {
@@ -999,6 +1033,17 @@
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.invite-invalid-btn {
+  border-color: #ffd6d6 !important;
+  background: #fff7f7 !important;
+  color: #c84144 !important;
+  font-weight: 900;
+
+  &:hover:not(:disabled) {
+    background: #fff0f0 !important;
+  }
 }
 
 .invite-empty-state,
@@ -1268,10 +1313,10 @@
   }
 
   .invite-toolbar {
-    grid-template-columns: minmax(330px, 1fr) 250px;
+    grid-template-columns: minmax(330px, 1fr) 470px;
 
     &.with-management {
-      grid-template-columns: minmax(330px, 1fr) 250px 210px;
+      grid-template-columns: minmax(330px, 1fr) 470px 210px;
     }
   }
 

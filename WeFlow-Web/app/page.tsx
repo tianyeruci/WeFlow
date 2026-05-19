@@ -595,7 +595,17 @@ function EmptyState({ text }: { text: string }) {
 function TraceRow({ row, onRaw }: { row: MemberTraceRow; onRaw: (raw: string) => void }) {
   return (
     <tr>
-      <td><span className="member-name">{row.memberName}</span><span className="wxid">{row.wxid || '-'}</span></td>
+      <td>
+        <div className="trace-member">
+          <div className="avatar trace-avatar">
+            {row.avatarUrl ? <img src={row.avatarUrl} alt="" /> : <span>{row.memberName.slice(0, 1) || '成'}</span>}
+          </div>
+          <div>
+            <span className="member-name">{row.memberName}</span>
+            <span className="wxid">{row.wxid || '-'}</span>
+          </div>
+        </div>
+      </td>
       <td>{row.source}</td>
       <td>{row.groupName}</td>
       <td>{formatDateTime(row.time)}</td>
