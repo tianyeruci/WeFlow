@@ -200,12 +200,12 @@ class InviteStatsSyncService {
       if (!endpoint || !token) return
 
       const nextEndpoint = this.resolveSyncRequestEndpoint(endpoint, '/next')
-      const response = await fetch(nextEndpoint, {
+      const response = await this.fetchWithRetry(nextEndpoint, {
         method: 'GET',
         headers: {
           Authorization: `Bearer ${token}`
         }
-      })
+      }, '轮询远程刷新请求')
       const payload = await this.readResponse(response) as { requestId?: number | null; error?: string } | null
       if (!response.ok) {
         console.warn('[InviteStatsSync] Remote refresh polling failed:', payload?.error || response.status)
@@ -231,7 +231,7 @@ class InviteStatsSyncService {
     result: InviteStatsRemoteSyncResult
   ): Promise<void> {
     try {
-      await fetch(this.resolveSyncRequestEndpoint(endpoint, '/complete'), {
+      await this.fetchWithRetry(this.resolveSyncRequestEndpoint(endpoint, '/complete'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -243,7 +243,7 @@ class InviteStatsSyncService {
           counts: result.counts || {},
           error: result.error || ''
         })
-      })
+      }, '完成远程刷新请求')
     } catch (error) {
       console.warn('[InviteStatsSync] Failed to complete remote refresh request:', error)
     }
@@ -267,6 +267,38 @@ class InviteStatsSyncService {
     ).trim()
   }
 
+  private async fetchWithRetry(endpoint: string, init: RequestInit, label: string): Promise<Response> {
+    let lastError: unknown = null
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        return await fetch(endpoint, init)
+      } catch (error) {
+        lastError = error
+        const message = this.describeRequestError(label, endpoint, error)
+        console.warn('[InviteStatsSync]', message)
+        if (attempt < 2) {
+          await new Promise(resolve => setTimeout(resolve, 300))
+        }
+      }
+    }
+    throw new Error(this.describeRequestError(label, endpoint, lastError))
+  }
+
+  private describeRequestError(label: string, endpoint: string, error: unknown): string {
+    const err = error instanceof Error ? error : new Error(String(error))
+    const cause = (err as Error & { cause?: any }).cause
+    const parts = [label, endpoint, err.message]
+    if (cause) {
+      const causeParts: string[] = []
+      if (cause.name) causeParts.push(String(cause.name))
+      if (cause.code !== undefined) causeParts.push(`code=${cause.code}`)
+      if (cause.errno !== undefined) causeParts.push(`errno=${cause.errno}`)
+      if (cause.message && cause.message !== err.message) causeParts.push(String(cause.message))
+      if (causeParts.length > 0) parts.push(`cause=${causeParts.join(' ')}`)
+    }
+    return parts.filter(Boolean).join(' | ')
+  }
+
   private resolveSyncRequestEndpoint(endpoint: string, suffix: '/next' | '/complete') {
     try {
       const url = new URL(endpoint)
@@ -283,18 +315,18 @@ class InviteStatsSyncService {
   }
 
   private async postPayload(endpoint: string, token: string, payload: InviteRemoteSyncPayload) {
-    return fetch(endpoint, {
+    return this.fetchWithRetry(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`
       },
       body: JSON.stringify(payload)
-    })
+    }, '同步本地数据')
   }
 
   private async postResetPayload(endpoint: string, token: string, useSyncCompatibility: boolean) {
-    return fetch(endpoint, {
+    return this.fetchWithRetry(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -303,7 +335,7 @@ class InviteStatsSyncService {
       body: JSON.stringify(useSyncCompatibility
         ? { action: 'reset', confirm: 'RESET_INVITE_STATS' }
         : { confirm: 'RESET_INVITE_STATS' })
-    })
+    }, useSyncCompatibility ? '恢复初始化（兼容同步）' : '恢复初始化')
   }
 
   private resolveResetEndpoint(endpoint: string) {

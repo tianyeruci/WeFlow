@@ -151,6 +151,8 @@ export class WcdbCore {
   private lastResolvedLogPath: string | null = null
   private lastCursorForceReopenAt = 0
   private readonly cursorForceReopenCooldownMs = 15000
+  private lastSessionForceReopenAt = 0
+  private readonly sessionForceReopenCooldownMs = 15000
 
   setPaths(resourcesPath: string, userDataPath: string): void {
     this.resourcesPath = resourcesPath
@@ -1703,11 +1705,29 @@ export class WcdbCore {
       await new Promise(resolve => setImmediate(resolve))
 
       const outPtr = [null as any]
-      const result = this.wcdbGetSessions(this.handle, outPtr)
+      let result = this.wcdbGetSessions(this.handle, outPtr)
 
-      //数据服务调用后再次让出控制权
+      // 数据服务调用后再次让出控制权
       await new Promise(resolve => setImmediate(resolve))
 
+      if (result !== 0 || !outPtr[0]) {
+        this.writeLog(`getSessions failed: code=${result} hasData=${outPtr[0] ? 1 : 0}`, true)
+        await this.printLogs(true)
+        if (this.shouldRetryGetSessionsAfterFailure()) {
+          this.writeLog('getSessions: attempting forceReopen after failure...', true)
+          const reopened = await this.forceReopen()
+          if (reopened && this.handle !== null) {
+            if (outPtr[0]) {
+              try { this.wcdbFreeString(outPtr[0]) } catch { }
+              outPtr[0] = null
+            }
+            result = this.wcdbGetSessions(this.handle, outPtr)
+            this.writeLog(`getSessions retry after forceReopen: code=${result} hasData=${outPtr[0] ? 1 : 0}`, true)
+          } else {
+            this.writeLog('getSessions forceReopen failed, giving up', true)
+          }
+        }
+      }
       if (result !== 0 || !outPtr[0]) {
         this.writeLog(`getSessions failed: code=${result}`)
         return { success: false, error: `获取会话失败: ${result}` }
@@ -3483,6 +3503,15 @@ export class WcdbCore {
       return false
     }
     this.lastCursorForceReopenAt = now
+    return true
+  }
+
+  private shouldRetryGetSessionsAfterFailure(): boolean {
+    const now = Date.now()
+    if (now - this.lastSessionForceReopenAt < this.sessionForceReopenCooldownMs) {
+      return false
+    }
+    this.lastSessionForceReopenAt = now
     return true
   }
 

@@ -461,6 +461,7 @@ function InviteStatsPage() {
     limit: 200
   })
   const [toast, setToast] = useState('')
+  const groupTagSelectValue = activeView === 'groups' && selectedTagId === ALL_ACTIVITY_TAG_ID ? '' : selectedTagId
 
   const selectedTag = useMemo(
     () => selectedTagId === ALL_ACTIVITY_TAG_ID ? undefined : tags.find((tag) => tag.tag_id === selectedTagId),
@@ -1209,21 +1210,23 @@ function InviteStatsPage() {
             <label>活动标签</label>
             <div className={`invite-tag-control ${canManageTags ? 'with-delete' : ''}`}>
               <select
-                value={selectedTagId}
+                value={activeView === 'groups' ? groupTagSelectValue : selectedTagId}
                 onChange={(event) => {
-                  setSelectedTagId(event.target.value)
+                  const nextTagId = event.target.value || ALL_ACTIVITY_TAG_ID
+                  setSelectedTagId(nextTagId)
                   setRankingGroupId('')
                   setTraceFilters((prev) => ({ ...prev, groupId: undefined }))
                 }}
               >
-                <option value="">请选择活动标签</option>
-                <option value={ALL_ACTIVITY_TAG_ID}>全部活动</option>
+                {activeView === 'groups'
+                  ? <option value="">请选择活动标签</option>
+                  : <option value={ALL_ACTIVITY_TAG_ID}>全部活动</option>}
                 {tags.map((tag) => (
                   <option key={tag.tag_id} value={tag.tag_id}>{tag.tag_name}</option>
                 ))}
               </select>
               {canManageTags && (
-                <button type="button" onClick={deleteActivityTag} disabled={!selectedTagId || isScanning} title="删除活动标签" className="danger">
+                <button type="button" onClick={deleteActivityTag} disabled={!selectedTag || isScanning} title="删除活动标签" className="danger">
                   <Trash2 size={15} />
                 </button>
               )}
