@@ -4,7 +4,7 @@
 
 `WeFlow-Web` 是当前仓库里的远程 Web 端项目，目录在 `D:\work\WeFlow\WeFlow-Web`。
 
-它目前定位为：
+它目前定位为： 
 
 - 基于 `Next.js 16 + React 18 + TypeScript`
 - 面向“邀请统计远程用户版”的只读 Web 应用
