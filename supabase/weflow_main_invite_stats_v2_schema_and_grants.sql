@@ -579,6 +579,7 @@ grant select, insert, update, delete on table quit_events to service_role;
 grant select, insert, update, delete on table member_identity_bindings to service_role;
 grant select, insert, update, delete on table scan_logs to service_role;
 grant select, insert, update, delete on table sync_batches to service_role;
+grant usage, select on sequence sync_batches_id_seq to service_role;
 
 grant select on table final_stat_events to service_role;
 grant select on table effective_invite_events to service_role;

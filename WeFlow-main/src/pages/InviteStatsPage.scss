@@ -499,6 +499,7 @@
   display: grid;
   grid-template-columns: minmax(190px, 1fr) minmax(260px, 360px);
   gap: 10px;
+  align-items: center;
   margin-bottom: 12px;
   padding: 10px;
   background: #f7f8fb;
@@ -784,7 +785,6 @@
   i {
     display: block;
     height: 100%;
-    min-width: 8px;
     border-radius: inherit;
     background: linear-gradient(90deg, var(--invite-coral), #ff9281);
   }
@@ -1306,6 +1306,35 @@
   box-shadow: 0 28px 80px rgba(15, 23, 42, 0.28);
 }
 
+.invite-confirm-modal {
+  width: min(520px, 92vw);
+  padding: 20px;
+  border: 1px solid rgba(255, 208, 208, 0.95);
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 28px 80px rgba(15, 23, 42, 0.28);
+}
+
+.invite-confirm-message {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 10px;
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid #ffd0d0;
+  border-radius: 10px;
+  background: #fff7f7;
+  color: #7f1d1d;
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1.55;
+
+  svg {
+    margin-top: 1px;
+    color: #c84144;
+  }
+}
+
 .invite-manual-modal {
   width: min(680px, 94vw);
   padding: 20px;
@@ -1379,6 +1408,8 @@
 }
 
 .invite-inline-copy-btn {
+  display: inline-grid;
+  place-items: center;
   min-height: 28px;
   padding: 0 10px;
   border-radius: 8px;
@@ -1387,6 +1418,11 @@
   font-size: 12px;
   font-weight: 900;
   white-space: nowrap;
+
+  &.icon-only {
+    width: 34px;
+    padding: 0;
+  }
 
   &:hover:not(:disabled) {
     color: var(--invite-blue);
