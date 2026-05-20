@@ -1,4 +1,4 @@
-import { supabaseDelete, supabaseUpsert } from './supabase-rest'
+import { supabaseDelete, supabaseInsert, supabaseUpsert } from './supabase-rest'
 
 type ActivityTagRow = {
   id: string
@@ -16,7 +16,7 @@ type GroupTagBindingRow = {
   account_scope: string
   group_id: string
   group_name: string
-  activity_tag_id: string
+  activity_tag_id: string | null
   enabled: boolean
   member_count: number | null
   last_scan_at: string | null
@@ -170,11 +170,28 @@ export async function syncInvitePayload(payload: InviteSyncPayload) {
     throw new Error('accountScope is required')
   }
 
-  const counts = await upsertScopeRows(payload)
+  const startedAt = new Date().toISOString()
+  try {
+    const counts = await upsertScopeRows(payload)
+    await recordSyncBatch(accountScope, 'completed', counts, startedAt).catch((logError) => {
+      console.warn('[InviteSync] Failed to write sync batch log:', logError)
+    })
 
-  return {
-    accountScope,
-    counts
+    return {
+      accountScope,
+      counts
+    }
+  } catch (error) {
+    await recordSyncBatch(
+      accountScope,
+      'failed',
+      buildEmptyCounts(),
+      startedAt,
+      error instanceof Error ? error.message : String(error)
+    ).catch((logError) => {
+      console.warn('[InviteSync] Failed to write sync batch log:', logError)
+    })
+    throw error
   }
 }
 
@@ -201,10 +218,7 @@ export async function resetInviteStatsRemoteData() {
 
 async function upsertScopeRows(payload: InviteSyncPayload) {
   const activityTags = payload.activityTags.filter(row => row.id)
-  const activityTagIds = new Set(activityTags.map(row => row.id))
-  const groupTagBindings = payload.groupTagBindings.filter(row =>
-    row.activity_tag_id && activityTagIds.has(row.activity_tag_id)
-  )
+  const groupTagBindings = payload.groupTagBindings.filter(row => row.id)
 
   await supabaseUpsert('activity_tags', activityTags, { onConflict: ['id'] })
   await supabaseUpsert('group_tag_bindings', groupTagBindings, {
@@ -225,4 +239,44 @@ async function upsertScopeRows(payload: InviteSyncPayload) {
     memberIdentityBindings: payload.memberIdentityBindings.length,
     scanLogs: payload.scanLogs.length
   }
+}
+
+function buildEmptyCounts() {
+  return {
+    activityTags: 0,
+    groupTagBindings: 0,
+    rawEvents: 0,
+    inviteEvents: 0,
+    quitEvents: 0,
+    memberIdentityBindings: 0,
+    scanLogs: 0
+  }
+}
+
+async function recordSyncBatch(
+  accountScope: string,
+  status: 'completed' | 'failed',
+  counts: ReturnType<typeof buildEmptyCounts>,
+  startedAt: string,
+  errorText = ''
+) {
+  await supabaseInsert('sync_batches', [{
+    account_scope: accountScope,
+    source_client: 'weflow-main-sync',
+    status,
+    activity_tags_count: counts.activityTags,
+    group_tag_bindings_count: counts.groupTagBindings,
+    raw_events_count: counts.rawEvents,
+    invite_events_count: counts.inviteEvents,
+    quit_events_count: counts.quitEvents,
+    member_identity_bindings_count: counts.memberIdentityBindings,
+    scan_logs_count: counts.scanLogs,
+    error_text: errorText || null,
+    started_at: startedAt,
+    finished_at: new Date().toISOString(),
+    raw_json: {
+      kind: 'local-sync',
+      counts
+    }
+  }], { returning: false })
 }

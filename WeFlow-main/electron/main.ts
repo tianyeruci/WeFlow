@@ -3643,6 +3643,7 @@ function registerIpcHandlers() {
     includeQuitMembers?: boolean
     minInviteCount?: number
     rankingGroupId?: string
+    dedupeMembers?: boolean
   }) => {
     return inviteStatsService.getDashboard(input)
   })
@@ -3698,7 +3699,7 @@ function registerIpcHandlers() {
     return inviteStatsSyncService.getResolvedOptions()
   })
   ipcMain.handle('inviteStats:syncRemote', async (_, options?: { endpoint?: string; token?: string }) => {
-    return inviteStatsSyncService.queueSync(options)
+    return inviteStatsSyncService.queueSync({ ...options, full: true })
   })
   ipcMain.handle('inviteStats:resetAllData', async (_, options?: { endpoint?: string; token?: string }) => {
     return inviteStatsSyncService.resetAllData(options)
@@ -4323,7 +4324,7 @@ app.whenReady().then(async () => {
   inviteStatsService.startAutoScanScheduler()
   inviteStatsService.startAutoQuitCheckScheduler()
   inviteStatsSyncService.startAutoSyncScheduler()
-  void inviteStatsSyncService.queueSync()
+  inviteStatsSyncService.startRemoteRefreshScheduler()
   await delay(200)
 
   // 已完成引导时，在 Splash 阶段预热核心数据（联系人、消息库索引等）

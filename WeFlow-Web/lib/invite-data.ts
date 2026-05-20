@@ -87,6 +87,8 @@ type GroupExportFile = {
   content: string
 }
 
+const ALL_ACTIVITY_TAG_ID = '__all__'
+
 export async function listActivityTags(): Promise<ActivityTag[]> {
   const rows = await supabaseSelect<AnyRecord>('activity_tags', { select: '*' })
   return rows
@@ -103,12 +105,10 @@ export async function getDashboard(filters: DashboardFilters): Promise<Dashboard
     loadFinalEvents(filters.tagId),
     loadGroupBindings(filters.tagId)
   ])
-  const confirmedEvents = events.filter(isConfirmedStatEvent)
-  const inviteEvents = confirmedEvents.filter(isInviteEvent)
-  const effectiveInviteEvents = inviteEvents.filter(isEffectiveInviteEvent)
-  const quitEvents = confirmedEvents.filter(isQuitEvent)
+  const inviteEvents = events.filter(isInviteEvent)
+  const quitEvents = events.filter(isQuitEvent)
   const groups = buildGroupsFromBindings(groupBindings)
-  const rankingEvents = effectiveInviteEvents.filter(row => {
+  const rankingEvents = inviteEvents.filter(row => {
     if (filters.rankingGroupId && String(row.group_id || '') !== filters.rankingGroupId) return false
     return withinRange(row.invite_time, filters.rankingStart, filters.rankingEnd)
   })
@@ -117,20 +117,20 @@ export async function getDashboard(filters: DashboardFilters): Promise<Dashboard
     cards: {
       activeRobots: 0,
       monitoredGroups: groups.length,
-      totalMembers: countUniqueMembers(inviteEvents.filter(row => row.delete_flag !== 1)),
-      totalMembersWithQuit: countUniqueMembers(inviteEvents),
-      todayNew: countUniqueMembers(effectiveInviteEvents.filter(row => isToday(row.invite_time))),
-      todayQuit: countUniqueMembers([
+      totalMembers: inviteEvents.filter(row => row.delete_flag !== 1).length,
+      totalMembersWithQuit: inviteEvents.length,
+      todayNew: inviteEvents.filter(row => row.delete_flag !== 1 && isToday(row.invite_time)).length,
+      todayQuit: [
         ...quitEvents.filter(row => isToday(eventTime(row))),
         ...inviteEvents.filter(row => row.delete_flag === 1 && isToday(eventTime(row)))
-      ]),
+      ].length,
       pendingCount: events.filter(row => row.status === 'pending').length
     },
     groups,
-    hourlyDistribution: buildHourlyDistribution(effectiveInviteEvents),
+    hourlyDistribution: buildHourlyDistribution(inviteEvents),
     inviteRanking: buildInviteRanking(rankingEvents),
     groupRanking: buildGroupRanking(groupBindings),
-    recentActivities: confirmedEvents
+    recentActivities: events
       .slice()
       .sort((a, b) => timeValue(eventTime(b)) - timeValue(eventTime(a)))
       .slice(0, 9)
@@ -205,9 +205,10 @@ export async function getMemberTraceExportRows(filters: TraceFilters) {
 export async function getGroupSummaryExportRows(filters: GroupReleaseFilters) {
   const dashboard = await getDashboard({ tagId: filters.tagId })
   const memberTotal = filters.includeQuit ? dashboard.cards.totalMembersWithQuit : dashboard.cards.totalMembers
+  const scopeLabel = filters.tagId === ALL_ACTIVITY_TAG_ID ? '全部活动' : '当前活动'
 
   return [[
-    '当前活动',
+    scopeLabel,
     dashboard.cards.monitoredGroups,
     memberTotal,
     filters.includeQuit ? '包含已退群的人' : '仅有效入群人数'
@@ -263,7 +264,7 @@ async function loadFinalEvents(tagId?: string) {
     limit: 10000
   }
 
-  if (tagId) query.activity_tag_id = `eq.${tagId}`
+  if (tagId && tagId !== ALL_ACTIVITY_TAG_ID) query.activity_tag_id = `eq.${tagId}`
 
   return supabaseSelect<FinalStatEvent>('final_stat_events', query)
 }
@@ -275,7 +276,7 @@ async function loadGroupBindings(tagId?: string) {
     limit: 10000
   }
 
-  if (tagId) query.activity_tag_id = `eq.${tagId}`
+  if (tagId && tagId !== ALL_ACTIVITY_TAG_ID) query.activity_tag_id = `eq.${tagId}`
 
   return supabaseSelect<GroupTagBinding>('group_tag_bindings', query)
 }
@@ -331,18 +332,18 @@ function buildHourlyDistribution(events: FinalStatEvent[]) {
 }
 
 function buildInviteRanking(events: FinalStatEvent[]): InviteRankingRow[] {
-  const ranking = new Map<string, { inviterId: string; inviterName: string; members: Set<string> }>()
+  const ranking = new Map<string, { inviterId: string; inviterName: string; count: number; groups: Set<string>; recent: number }>()
   events.forEach(row => {
     const name = inviterName(row)
-    if (!name || name === '未知来源') return
-    const id = String(row.inviter_wx_id || name)
-    const current = ranking.get(id) || { inviterId: id, inviterName: name, members: new Set<string>() }
-    const key = memberKey(row)
-    if (key) current.members.add(key)
+    const id = String(row.inviter_wx_id || row.inviter_name || name || 'unknown')
+    const current = ranking.get(id) || { inviterId: id, inviterName: name || id, count: 0, groups: new Set<string>(), recent: 0 }
+    current.count += 1
+    current.groups.add(String(row.group_id || ''))
+    current.recent = Math.max(current.recent, timeValue(row.invite_time))
     ranking.set(id, current)
   })
   return Array.from(ranking.values())
-    .map(row => ({ inviterId: row.inviterId, inviterName: row.inviterName, count: row.members.size }))
+    .map(row => ({ inviterId: row.inviterId, inviterName: row.inviterName, count: row.count }))
     .sort((a, b) => b.count - a.count)
 }
 

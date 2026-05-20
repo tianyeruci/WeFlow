@@ -9,6 +9,7 @@ import {
   Copy,
   Download,
   FileSpreadsheet,
+  ImageDown,
   Loader2,
   PieChart,
   Plus,
@@ -38,6 +39,8 @@ type ViewKey = 'dashboard' | 'groups' | 'trace' | 'pending'
 type ChartMode = 'bar' | 'pie'
 type GroupSortKey = 'member_count' | 'today_join_count' | 'today_quit_count' | 'last_scan_time' | 'recent_invite_time'
 type ManualInviteMode = 'confirm' | 'add'
+const ALL_ACTIVITY_TAG_ID = '__all__'
+const GROUP_RANK_PAGE_SIZE = 10
 
 type ManualInviteFormState = {
   groupId: string
@@ -165,6 +168,119 @@ const inferExportFormat = (filePath: string): 'csv' | 'xlsx' => {
 
 const fileNameDate = (): string => toDateInput(new Date()).replace(/-/g, '')
 
+const sanitizeDownloadFilename = (value: string): string => {
+  return value
+    .replace(/[\\/:*?"<>|]+/g, '-')
+    .replace(/[\u0000-\u001f]/g, '')
+    .trim() || 'download'
+}
+
+const rankingImageColors = ['#59b8ad', '#e3c763', '#e75a6c', '#ffd8b4', '#5b9bea', '#87cba2', '#f28a42', '#586aa5', '#bf7bd7']
+
+function downloadRankingImage(input: {
+  title: string
+  filename: string
+  rows: Array<{ name: string; count: number }>
+}) {
+  if (!input.rows.length) return false
+
+  const width = 1000
+  const left = 260
+  const right = 130
+  const top = 74
+  const rowHeight = 48
+  const bottom = 44
+  const chartWidth = width - left - right
+  const height = Math.max(260, top + input.rows.length * rowHeight + bottom)
+  const scale = Math.min(2, window.devicePixelRatio || 1)
+  const canvas = document.createElement('canvas')
+  canvas.width = width * scale
+  canvas.height = height * scale
+  canvas.style.width = `${width}px`
+  canvas.style.height = `${height}px`
+
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return false
+
+  ctx.scale(scale, scale)
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, width, height)
+
+  ctx.fillStyle = '#1f2937'
+  ctx.font = '700 24px "Microsoft YaHei", "PingFang SC", sans-serif'
+  ctx.fillText(input.title, 12, 32)
+
+  const maxCount = Math.max(1, ...input.rows.map((row) => row.count))
+  ctx.strokeStyle = '#e6e8ed'
+  ctx.lineWidth = 1
+  for (let index = 0; index <= 4; index += 1) {
+    const x = left + (chartWidth * index) / 4
+    ctx.beginPath()
+    ctx.moveTo(x, top - 24)
+    ctx.lineTo(x, height - bottom + 4)
+    ctx.stroke()
+  }
+
+  ctx.strokeStyle = '#9aa3b2'
+  ctx.beginPath()
+  ctx.moveTo(left, top - 24)
+  ctx.lineTo(left, height - bottom + 4)
+  ctx.stroke()
+
+  input.rows.forEach((row, index) => {
+    const y = top + index * rowHeight
+    const barWidth = Math.max(8, (row.count / maxCount) * chartWidth)
+    const barY = y + 10
+    const barHeight = 18
+    const radius = 9
+
+    ctx.fillStyle = '#6f7785'
+    ctx.font = '400 20px "Microsoft YaHei", "PingFang SC", sans-serif'
+    ctx.textAlign = 'right'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(ellipsizeCanvasText(ctx, row.name || '未知来源', left - 18, 210), left - 14, y + 19)
+
+    ctx.fillStyle = rankingImageColors[index % rankingImageColors.length]
+    drawRoundedBar(ctx, left, barY, barWidth, barHeight, radius)
+
+    ctx.fillStyle = '#85878d'
+    ctx.font = '500 22px "Microsoft YaHei", "PingFang SC", sans-serif'
+    ctx.textAlign = 'left'
+    ctx.fillText(formatNumber(row.count), left + barWidth + 10, y + 19)
+  })
+
+  const link = document.createElement('a')
+  link.href = canvas.toDataURL('image/png')
+  link.download = input.filename
+  link.click()
+  return true
+}
+
+function drawRoundedBar(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) {
+  const safeRadius = Math.min(radius, width / 2, height / 2)
+  ctx.beginPath()
+  ctx.moveTo(x + safeRadius, y)
+  ctx.lineTo(x + width - safeRadius, y)
+  ctx.quadraticCurveTo(x + width, y, x + width, y + safeRadius)
+  ctx.lineTo(x + width, y + height - safeRadius)
+  ctx.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height)
+  ctx.lineTo(x + safeRadius, y + height)
+  ctx.quadraticCurveTo(x, y + height, x, y + height - safeRadius)
+  ctx.lineTo(x, y + safeRadius)
+  ctx.quadraticCurveTo(x, y, x + safeRadius, y)
+  ctx.fill()
+}
+
+function ellipsizeCanvasText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number, fallbackWidth: number) {
+  const width = Number.isFinite(maxWidth) && maxWidth > 0 ? maxWidth : fallbackWidth
+  if (ctx.measureText(text).width <= width) return text
+  let next = text
+  while (next.length > 1 && ctx.measureText(`${next}...`).width > width) {
+    next = next.slice(0, -1)
+  }
+  return `${next}...`
+}
+
 const formatCompactDateTime = (value: string): string => {
   if (!value) return ''
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/.exec(value)
@@ -234,9 +350,11 @@ function InviteStatsPage() {
   const [activeView, setActiveView] = useState<ViewKey>('dashboard')
   const [tags, setTags] = useState<InviteActivityTag[]>([])
   const [groups, setGroups] = useState<InviteStatsGroupRow[]>([])
-  const [selectedTagId, setSelectedTagId] = useState('')
+  const [selectedTagId, setSelectedTagId] = useState(ALL_ACTIVITY_TAG_ID)
   const [includeQuitMembers, setIncludeQuitMembers] = useState(false)
+  const [dedupeMembers, setDedupeMembers] = useState(false)
   const [chartMode, setChartMode] = useState<ChartMode>('bar')
+  const [groupRankPage, setGroupRankPage] = useState(1)
   const [rankingGroupId, setRankingGroupId] = useState('')
   const [rankingStartDateTime, setRankingStartDateTime] = useState('')
   const [rankingEndDateTime, setRankingEndDateTime] = useState('')
@@ -280,9 +398,15 @@ function InviteStatsPage() {
   const [toast, setToast] = useState('')
 
   const selectedTag = useMemo(
-    () => tags.find((tag) => tag.tag_id === selectedTagId),
+    () => selectedTagId === ALL_ACTIVITY_TAG_ID ? undefined : tags.find((tag) => tag.tag_id === selectedTagId),
     [tags, selectedTagId]
   )
+  const isAllActivitySelected = selectedTagId === ALL_ACTIVITY_TAG_ID
+  const selectedScopeLabel = isAllActivitySelected ? '全部活动' : (selectedTag?.tag_name || '当前活动')
+  const selectedScopeFileLabel = isAllActivitySelected ? '全部活动' : (selectedTag?.tag_name || '活动')
+  const memberTotalLabel = includeQuitMembers
+    ? (dedupeMembers ? '总成员数含退群 / 去重' : '总成员数含退群 / 不去重')
+    : (dedupeMembers ? '总成员数仅在群 / 去重' : '总成员数仅在群 / 不去重')
 
   const rankingStartTime = useMemo(() => dateTimeSeconds(rankingStartDateTime), [rankingStartDateTime])
   const rankingEndTime = useMemo(() => dateTimeSeconds(rankingEndDateTime), [rankingEndDateTime])
@@ -377,6 +501,31 @@ function InviteStatsPage() {
     }
   }
 
+  const copyManualInviteName = async () => {
+    const text = (manualInviteForm.user || manualInviteDialog?.row.user || '').trim()
+    if (!text) {
+      showToast('暂无可复制内容')
+      return
+    }
+
+    try {
+      await navigator.clipboard.writeText(text)
+      showToast('被邀请人昵称已复制')
+    } catch {
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.setAttribute('readonly', 'true')
+      textarea.style.position = 'fixed'
+      textarea.style.top = '-9999px'
+      textarea.style.left = '-9999px'
+      document.body.appendChild(textarea)
+      textarea.select()
+      const copied = document.execCommand('copy')
+      document.body.removeChild(textarea)
+      showToast(copied ? '被邀请人昵称已复制' : '复制失败，请手动选择文本复制')
+    }
+  }
+
   const resetInviteStatsData = async () => {
     if (resetConfirmText !== 'RESET') {
       showToast('请输入 RESET 后再恢复初始化')
@@ -434,10 +583,9 @@ function InviteStatsPage() {
         setScanLogs(scanResult.data.logs || [])
       }
 
-      const candidateTagId = preferredTagId || selectedTagId
-      const stillExists = nextTags.some((tag) => tag.tag_id === candidateTagId)
-      const fallbackTag = nextTags.find((tag) => tag.enabled) || nextTags[0]
-      setSelectedTagId(stillExists ? candidateTagId : (fallbackTag?.tag_id || ''))
+      const candidateTagId = preferredTagId || selectedTagId || ALL_ACTIVITY_TAG_ID
+      const stillExists = candidateTagId === ALL_ACTIVITY_TAG_ID || nextTags.some((tag) => tag.tag_id === candidateTagId)
+      setSelectedTagId(stillExists ? candidateTagId : ALL_ACTIVITY_TAG_ID)
 
       if (!tagResult.success) showToast(tagResult.error || '活动标签读取失败')
       if (!groupResult.success) showToast(groupResult.error || '群列表读取失败')
@@ -447,17 +595,19 @@ function InviteStatsPage() {
   }, [selectedTagId, showToast])
 
   const loadDashboard = useCallback(async () => {
-    if (!selectedTagId) {
+    const tagId = selectedTagId || ALL_ACTIVITY_TAG_ID
+    if (!tagId) {
       setDashboard(null)
       return
     }
     setIsDashboardLoading(true)
     try {
       const result = await window.electronAPI.inviteStats.getDashboard({
-        tagId: selectedTagId,
+        tagId,
         startTime: rankingStartTime,
         endTime: rankingEndTime,
         includeQuitMembers,
+        dedupeMembers,
         rankingGroupId: rankingGroupId || undefined
       })
       if (result.success) {
@@ -472,7 +622,7 @@ function InviteStatsPage() {
     } finally {
       setIsDashboardLoading(false)
     }
-  }, [includeQuitMembers, rankingEndTime, rankingGroupId, rankingStartTime, selectedTagId, showToast])
+  }, [dedupeMembers, includeQuitMembers, rankingEndTime, rankingGroupId, rankingStartTime, selectedTagId, showToast])
 
   const loadTrace = useCallback(async () => {
     if (!selectedTagId) {
@@ -494,6 +644,16 @@ function InviteStatsPage() {
     }
   }, [selectedTagId, showToast, traceEndTime, traceFilters, traceStartTime])
 
+  const tagGroups = useMemo(
+    () => {
+      if (selectedTagId === ALL_ACTIVITY_TAG_ID) {
+        return groups.filter((group) => group.binding_enabled)
+      }
+      return groups.filter((group) => group.tag_id === selectedTagId && group.binding_enabled)
+    },
+    [groups, selectedTagId]
+  )
+
   const loadPending = useCallback(async () => {
     const result = await window.electronAPI.inviteStats.listPending({ tagId: selectedTagId || undefined })
     if (result.success) {
@@ -508,7 +668,7 @@ function InviteStatsPage() {
     mode: ManualInviteMode,
     memberName?: string
   ) => {
-    const fallbackGroup = groups.find((group) => group.tag_id === selectedTagId && group.binding_enabled)
+    const fallbackGroup = tagGroups[0]
     const contextMember = (row.source_context_members || []).find((name) => name && name !== row.user)
     setManualInviteDialog({ mode, row })
     setManualInviteForm({
@@ -518,7 +678,7 @@ function InviteStatsPage() {
       inviter: row.inviter || '',
       inviterWxId: row.inviter_wx_id || ''
     })
-  }, [groups, selectedTagId])
+  }, [tagGroups])
 
   const closeManualInviteDialog = useCallback(() => {
     if (isSavingManualInvite) return
@@ -720,22 +880,43 @@ function InviteStatsPage() {
 
   const exportInviteRanking = async () => {
     if (!selectedTagId) return
-    const filePath = await chooseExportPath('导出邀请排行榜', `邀请排行榜-${selectedTag?.tag_name || '活动'}-${fileNameDate()}.xlsx`)
+    const filePath = await chooseExportPath('导出邀请排行榜', `邀请排行榜-${selectedScopeFileLabel}-${fileNameDate()}.xlsx`)
     if (!filePath) return
     const result = await window.electronAPI.inviteStats.exportInviteRanking({
       filePath,
       format: inferExportFormat(filePath),
-      tagId: selectedTagId,
+      tagId: selectedTagId || ALL_ACTIVITY_TAG_ID,
       startTime: rankingStartTime,
       endTime: rankingEndTime,
-      groupId: rankingGroupId || undefined
+      groupId: rankingGroupId || undefined,
+      dedupeMembers
     })
     showToast(result.success ? `已导出 ${result.count || 0} 条排行榜` : (result.error || '导出失败'))
   }
 
+  const exportInviteRankingImage = () => {
+    const rows = (dashboard?.inviteRanking || []).map((row) => ({
+      name: row.inviter || row.inviter_wx_id || '未知来源',
+      count: Number(row.invite_count || 0)
+    }))
+    if (!rows.length) {
+      showToast('暂无排行榜数据可下载')
+      return
+    }
+    const selectedGroup = rankingGroupId ? tagGroups.find((group) => group.group_id === rankingGroupId) : undefined
+    const scopeLabel = selectedGroup?.group_name || '所有群'
+    const total = rows.reduce((sum, row) => sum + row.count, 0)
+    const ok = downloadRankingImage({
+      title: `【${scopeLabel}】邀请人数排行榜（招募者 ${rows.length} 名，总人数 ${formatNumber(total)}）`,
+      filename: `${sanitizeDownloadFilename(`邀请人数排行榜-${selectedScopeFileLabel}-${scopeLabel}-${fileNameDate()}`)}.png`,
+      rows
+    })
+    showToast(ok ? '排行榜图片已下载' : '图片生成失败')
+  }
+
   const exportTrace = async () => {
     if (!selectedTagId) return
-    const filePath = await chooseExportPath('导出成员溯源', `成员溯源-${selectedTag?.tag_name || '活动'}-${fileNameDate()}.xlsx`)
+    const filePath = await chooseExportPath('导出成员溯源', `成员溯源-${selectedScopeFileLabel}-${fileNameDate()}.xlsx`)
     if (!filePath) return
     const result = await window.electronAPI.inviteStats.exportMemberTrace({
       ...traceFilters,
@@ -749,12 +930,12 @@ function InviteStatsPage() {
   }
 
   const exportRawEvents = async () => {
-    const filePath = await chooseExportPath('导出原始事件', `原始事件-${selectedTag?.tag_name || '全部'}-${fileNameDate()}.xlsx`)
+    const filePath = await chooseExportPath('导出原始事件', `原始事件-${selectedScopeFileLabel}-${fileNameDate()}.xlsx`)
     if (!filePath) return
     const result = await window.electronAPI.inviteStats.exportRawEvents({
       filePath,
       format: inferExportFormat(filePath),
-      tagId: selectedTagId || undefined
+      tagId: selectedTagId || ALL_ACTIVITY_TAG_ID
     })
     showToast(result.success ? `已导出 ${result.count || 0} 条原始事件` : (result.error || '导出失败'))
   }
@@ -828,11 +1009,6 @@ function InviteStatsPage() {
       .sort((a, b) => Number(b[groupSort] || 0) - Number(a[groupSort] || 0))
   }, [groupSearch, groupSort, groupUnitTagFilter, groups])
 
-  const tagGroups = useMemo(
-    () => groups.filter((group) => group.tag_id === selectedTagId && group.binding_enabled),
-    [groups, selectedTagId]
-  )
-
   useEffect(() => {
     const tagGroupIds = new Set(tagGroups.map((group) => group.group_id))
     if (rankingGroupId && !tagGroupIds.has(rankingGroupId)) setRankingGroupId('')
@@ -843,6 +1019,7 @@ function InviteStatsPage() {
 
   useEffect(() => {
     setGroupUnitTagFilter(selectedTagId || '__all')
+    setGroupRankPage(1)
   }, [selectedTagId])
 
   const hourlyOption = useMemo(() => {
@@ -920,10 +1097,20 @@ function InviteStatsPage() {
     ? `${latestScanModeLabel} · ${formatShortTime(latestLog.finished_at || latestLog.started_at)} · ${statusLabel(latestLog.status)}`
     : '尚未扫描'
   const pendingBadgeCount = dashboard?.cards?.pendingCount || pendingRows.length
-  const groupRankRows = (dashboard?.groupRanking || []).slice(0, 6)
+  const groupRankingRows = dashboard?.groupRanking || []
+  const groupRankPageCount = Math.max(1, Math.ceil(groupRankingRows.length / GROUP_RANK_PAGE_SIZE))
+  const safeGroupRankPage = Math.min(groupRankPage, groupRankPageCount)
+  const groupRankStart = (safeGroupRankPage - 1) * GROUP_RANK_PAGE_SIZE
+  const groupRankRows = groupRankingRows.slice(groupRankStart, groupRankStart + GROUP_RANK_PAGE_SIZE)
   const maxGroupMemberCount = Math.max(1, ...groupRankRows.map((group) => Number(group.member_count || 0)))
   const canManageTags = activeView === 'groups'
   const manualSelectedGroupExists = tagGroups.some((group) => group.group_id === manualInviteForm.groupId)
+
+  useEffect(() => {
+    if (groupRankPage > groupRankPageCount) {
+      setGroupRankPage(groupRankPageCount)
+    }
+  }, [groupRankPage, groupRankPageCount])
 
   return (
     <div className="invite-stats-page">
@@ -971,6 +1158,7 @@ function InviteStatsPage() {
                 }}
               >
                 <option value="">请选择活动标签</option>
+                <option value={ALL_ACTIVITY_TAG_ID}>全部活动</option>
                 {tags.map((tag) => (
                   <option key={tag.tag_id} value={tag.tag_id}>{tag.tag_name}</option>
                 ))}
@@ -1027,16 +1215,26 @@ function InviteStatsPage() {
               <div className="invite-metric-icon"><Users size={24} /></div>
               <div>
                 <strong>{formatNumber(cards?.totalMembers || 0)}</strong>
-                <span>{includeQuitMembers ? '总成员数含退群' : '总成员数仅在群'}</span>
+                <span>{memberTotalLabel}</span>
               </div>
-              <label className="invite-metric-toggle">
-                <input
-                  type="checkbox"
-                  checked={includeQuitMembers}
-                  onChange={(event) => setIncludeQuitMembers(event.target.checked)}
-                />
-                <span>含退群</span>
-              </label>
+              <div className="invite-metric-toggles">
+                <label className="invite-metric-toggle">
+                  <input
+                    type="checkbox"
+                    checked={includeQuitMembers}
+                    onChange={(event) => setIncludeQuitMembers(event.target.checked)}
+                  />
+                  <span>含退群</span>
+                </label>
+                <label className="invite-metric-toggle">
+                  <input
+                    type="checkbox"
+                    checked={dedupeMembers}
+                    onChange={(event) => setDedupeMembers(event.target.checked)}
+                  />
+                  <span>去重</span>
+                </label>
+              </div>
             </article>
             <article className="invite-metric-card violet">
               <div className="invite-metric-icon"><BarChart3 size={24} /></div>
@@ -1072,7 +1270,7 @@ function InviteStatsPage() {
                 <div className="invite-list">
                   {groupRankRows.map((group, index) => (
                     <div className="invite-rank-line" key={group.group_id}>
-                      <b className={index > 0 ? 'muted' : ''}>{index + 1}</b>
+                      <b className={groupRankStart + index > 0 ? 'muted' : ''}>{groupRankStart + index + 1}</b>
                       <div>
                         <span>{group.group_name}</span>
                         <div className="invite-mini-bar"><i style={{ width: `${Math.max(8, Math.round((Number(group.member_count || 0) / maxGroupMemberCount) * 100))}%` }} /></div>
@@ -1081,16 +1279,25 @@ function InviteStatsPage() {
                     </div>
                   ))}
                   {groupRankRows.length === 0 && <div className="invite-muted">暂无群人数数据</div>}
+                  {groupRankingRows.length > GROUP_RANK_PAGE_SIZE && (
+                    <div className="invite-rank-pagination">
+                      <span>共 {formatNumber(groupRankingRows.length)} 个群，{safeGroupRankPage}/{groupRankPageCount}</span>
+                      <div>
+                        <button type="button" disabled={safeGroupRankPage <= 1} onClick={() => setGroupRankPage((page) => Math.max(1, page - 1))}>上一页</button>
+                        <button type="button" disabled={safeGroupRankPage >= groupRankPageCount} onClick={() => setGroupRankPage((page) => Math.min(groupRankPageCount, page + 1))}>下一页</button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </section>
             </div>
 
             <section className="invite-panel invite-ranking-panel">
               <div className="invite-panel-title">
-                <div>
-                  <h2>邀请人数排行榜</h2>
-                  <p>【{selectedTag?.tag_name || '当前活动'}】招募者 {dashboard?.inviteRanking?.length || 0} 名，有效入群人数 {formatNumber(cards?.totalMembers || 0)}</p>
-                </div>
+                  <div>
+                    <h2>邀请人数排行榜</h2>
+                    <p>【{selectedScopeLabel}】招募者 {dashboard?.inviteRanking?.length || 0} 名，有效入群人数 {formatNumber(cards?.totalMembers || 0)}</p>
+                  </div>
                 <div className="invite-segment">
                   <button className={chartMode === 'bar' ? 'active' : ''} onClick={() => setChartMode('bar')} title="柱状图">
                     <BarChart3 size={15} />
@@ -1100,6 +1307,9 @@ function InviteStatsPage() {
                   </button>
                   <button onClick={exportInviteRanking} title="导出排行榜">
                     <Download size={15} />
+                  </button>
+                  <button onClick={exportInviteRankingImage} title="下载排行榜图片">
+                    <ImageDown size={15} />
                   </button>
                 </div>
               </div>
@@ -1430,7 +1640,13 @@ function InviteStatsPage() {
                 </select>
               </label>
               <label className="invite-manual-field">
-                <span>被邀请人</span>
+                <span className="invite-manual-field-head">
+                  <span>被邀请人</span>
+                  <button type="button" className="invite-inline-copy-btn" onClick={() => void copyManualInviteName()} disabled={!((manualInviteForm.user || manualInviteDialog?.row.user || '').trim())}>
+                    <Copy size={14} />
+                    <span>复制</span>
+                  </button>
+                </span>
                 <input
                   value={manualInviteForm.user}
                   onChange={(event) => setManualInviteForm((prev) => ({ ...prev, user: event.target.value }))}

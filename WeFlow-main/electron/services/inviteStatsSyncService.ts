@@ -4,6 +4,7 @@ import { ConfigService } from './config'
 export interface InviteStatsRemoteSyncOptions {
   endpoint?: string
   token?: string
+  full?: boolean
 }
 
 export interface InviteStatsRemoteSyncResult {
@@ -22,8 +23,14 @@ export interface InviteStatsResetResult {
 class InviteStatsSyncService {
   private readonly configService = ConfigService.getInstance()
   private syncPromise: Promise<InviteStatsRemoteSyncResult> | null = null
-  private autoSyncTimer: ReturnType<typeof setInterval> | null = null
-  private readonly autoSyncIntervalMs = 3 * 60 * 1000
+  private autoSyncTimer: ReturnType<typeof setTimeout> | null = null
+  private remoteRefreshTimer: ReturnType<typeof setTimeout> | null = null
+  private autoSyncStarted = false
+  private remoteRefreshStarted = false
+  private remoteRefreshPolling = false
+  private readonly autoSyncInitialDelayMs = 0
+  private readonly autoSyncIntervalMs = 5 * 60 * 1000
+  private readonly remoteRefreshIntervalMs = 5 * 1000
   private readonly maxBatchPayloadBytes = 900 * 1024
 
   async syncCurrentScope(options: InviteStatsRemoteSyncOptions = {}): Promise<InviteStatsRemoteSyncResult> {
@@ -39,7 +46,7 @@ class InviteStatsSyncService {
         return { success: false, error: '未配置远端同步令牌，请提供 token 或设置 WEFLOW_INVITE_SYNC_TOKEN' }
       }
 
-      const payload = await inviteStatsService.exportCurrentScopeSyncPayload({ dirtyOnly: true })
+      const { payload, snapshot } = await inviteStatsService.exportCurrentScopeSyncPayload({ dirtyOnly: options.full !== true })
       if (this.isPayloadEmpty(payload)) {
         return {
           success: true,
@@ -54,7 +61,7 @@ class InviteStatsSyncService {
         if (!response.ok) {
           const suffix = batches.length > 1 ? `，批次 ${index + 1}/${batches.length}` : ''
           const errorMessage = result?.error || `远端同步失败 (${response.status}${suffix})`
-          inviteStatsService.markCurrentScopeSyncResult(false, errorMessage)
+          inviteStatsService.markCurrentScopeSyncResult(false, errorMessage, snapshot)
           return {
             success: false,
             accountScope: payload.accountScope,
@@ -63,7 +70,7 @@ class InviteStatsSyncService {
         }
       }
 
-      inviteStatsService.markCurrentScopeSyncResult(true)
+      inviteStatsService.markCurrentScopeSyncResult(true, '', snapshot)
       return {
         success: true,
         accountScope: payload.accountScope,
@@ -75,7 +82,12 @@ class InviteStatsSyncService {
   }
 
   queueSync(options: InviteStatsRemoteSyncOptions = {}): Promise<InviteStatsRemoteSyncResult> {
-    if (this.syncPromise) return this.syncPromise
+    if (this.syncPromise) {
+      if (options.full) {
+        return this.syncPromise.then(() => this.queueSync(options))
+      }
+      return this.syncPromise
+    }
     this.syncPromise = this.syncCurrentScope(options).finally(() => {
       this.syncPromise = null
     })
@@ -125,23 +137,115 @@ class InviteStatsSyncService {
   }
 
   startAutoSyncScheduler(): void {
-    if (this.autoSyncTimer) return
-    this.autoSyncTimer = setInterval(() => {
-      void this.queueSync()
-    }, this.autoSyncIntervalMs)
-    if (typeof this.autoSyncTimer.unref === 'function') this.autoSyncTimer.unref()
+    if (this.autoSyncStarted) return
+    this.autoSyncStarted = true
+
+    const scheduleNext = (delayMs: number) => {
+      const timer = setTimeout(async () => {
+        this.autoSyncTimer = null
+        await this.queueSync()
+        if (this.autoSyncStarted) scheduleNext(this.autoSyncIntervalMs)
+      }, delayMs)
+      if (typeof timer.unref === 'function') timer.unref()
+      this.autoSyncTimer = timer
+    }
+
+    scheduleNext(this.autoSyncInitialDelayMs)
   }
 
   stopAutoSyncScheduler(): void {
-    if (!this.autoSyncTimer) return
-    clearInterval(this.autoSyncTimer)
+    if (this.autoSyncTimer) clearTimeout(this.autoSyncTimer)
     this.autoSyncTimer = null
+    this.autoSyncStarted = false
+  }
+
+  startRemoteRefreshScheduler(): void {
+    if (this.remoteRefreshStarted) return
+    this.remoteRefreshStarted = true
+
+    const scheduleNext = (delayMs: number) => {
+      const timer = setTimeout(async () => {
+        this.remoteRefreshTimer = null
+        await this.pollRemoteRefreshRequest()
+        if (this.remoteRefreshStarted) scheduleNext(this.remoteRefreshIntervalMs)
+      }, delayMs)
+      if (typeof timer.unref === 'function') timer.unref()
+      this.remoteRefreshTimer = timer
+    }
+
+    scheduleNext(this.remoteRefreshIntervalMs)
+  }
+
+  stopRemoteRefreshScheduler(): void {
+    if (this.remoteRefreshTimer) clearTimeout(this.remoteRefreshTimer)
+    this.remoteRefreshTimer = null
+    this.remoteRefreshStarted = false
+    this.remoteRefreshPolling = false
   }
 
   getResolvedOptions(): Required<InviteStatsRemoteSyncOptions> {
     return {
       endpoint: this.resolveEndpoint(),
-      token: this.resolveToken()
+      token: this.resolveToken(),
+      full: false
+    }
+  }
+
+  private async pollRemoteRefreshRequest(): Promise<void> {
+    if (this.remoteRefreshPolling) return
+    this.remoteRefreshPolling = true
+    try {
+      const endpoint = this.resolveEndpoint()
+      const token = this.resolveToken()
+      if (!endpoint || !token) return
+
+      const nextEndpoint = this.resolveSyncRequestEndpoint(endpoint, '/next')
+      const response = await fetch(nextEndpoint, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      })
+      const payload = await this.readResponse(response) as { requestId?: number | null; error?: string } | null
+      if (!response.ok) {
+        console.warn('[InviteStatsSync] Remote refresh polling failed:', payload?.error || response.status)
+        return
+      }
+
+      const requestId = Number(payload?.requestId || 0)
+      if (!requestId) return
+
+      const result = await this.queueSync({ endpoint, token, full: true })
+      await this.completeRemoteRefreshRequest(endpoint, token, requestId, result)
+    } catch (error) {
+      console.warn('[InviteStatsSync] Remote refresh polling error:', error)
+    } finally {
+      this.remoteRefreshPolling = false
+    }
+  }
+
+  private async completeRemoteRefreshRequest(
+    endpoint: string,
+    token: string,
+    requestId: number,
+    result: InviteStatsRemoteSyncResult
+  ): Promise<void> {
+    try {
+      await fetch(this.resolveSyncRequestEndpoint(endpoint, '/complete'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          requestId,
+          success: result.success,
+          counts: result.counts || {},
+          error: result.error || ''
+        })
+      })
+    } catch (error) {
+      console.warn('[InviteStatsSync] Failed to complete remote refresh request:', error)
     }
   }
 
@@ -161,6 +265,21 @@ class InviteStatsSyncService {
       process.env.WEFLOW_INVITE_SYNC_TOKEN ||
       ''
     ).trim()
+  }
+
+  private resolveSyncRequestEndpoint(endpoint: string, suffix: '/next' | '/complete') {
+    try {
+      const url = new URL(endpoint)
+      if (/\/api\/invite\/[^/]+\/?$/.test(url.pathname)) {
+        url.pathname = url.pathname.replace(/\/api\/invite\/[^/]+\/?$/, `/api/invite/sync-request${suffix}`)
+      } else {
+        url.pathname = `${url.pathname.replace(/\/$/, '')}/sync-request${suffix}`
+      }
+      url.search = ''
+      return url.toString()
+    } catch {
+      return endpoint.replace(/\/sync(\?.*)?$/, `/sync-request${suffix}`)
+    }
   }
 
   private async postPayload(endpoint: string, token: string, payload: InviteRemoteSyncPayload) {
