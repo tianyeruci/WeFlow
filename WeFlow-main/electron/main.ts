@@ -848,6 +848,7 @@ function createWindow(options: { autoShow?: boolean } = {}) {
     height: 900,
     minWidth: 1000,
     minHeight: 700,
+    title: '邀请统计',
     icon: iconPath,
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
