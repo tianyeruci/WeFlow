@@ -455,6 +455,7 @@ function InviteStatsPage() {
   const [isRemoteSyncing, setIsRemoteSyncing] = useState(false)
   const [isResettingInviteStats, setIsResettingInviteStats] = useState(false)
   const [resetConfirmText, setResetConfirmText] = useState('')
+  const [resetConfirmDialogOpen, setResetConfirmDialogOpen] = useState(false)
   const [traceFilters, setTraceFilters] = useState<InviteMemberTraceFilters>({
     includeQuit: true,
     limit: 200
@@ -590,15 +591,16 @@ function InviteStatsPage() {
     }
   }
 
-  const resetInviteStatsData = async () => {
+  const requestResetInviteStatsData = () => {
     if (resetConfirmText.trim() !== RESET_CONFIRM_TEXT) {
       showToast(`请输入“${RESET_CONFIRM_TEXT}”后再恢复初始化`)
       return
     }
+    setResetConfirmDialogOpen(true)
+  }
 
-    const confirmed = window.confirm('恢复初始化会删除本地邀请统计记录，并清空远端邀请统计相关表数据。该操作不可撤销，确定继续吗？')
-    if (!confirmed) return
-
+  const resetInviteStatsData = async () => {
+    setResetConfirmDialogOpen(false)
     setIsResettingInviteStats(true)
     try {
       await Promise.all([
@@ -614,6 +616,7 @@ function InviteStatsPage() {
         return
       }
       setRemoteSyncDialogOpen(false)
+      setResetConfirmDialogOpen(false)
       setResetConfirmText('')
       setSelectedTagId('')
       setDashboard(null)
@@ -1117,7 +1120,7 @@ function InviteStatsPage() {
   const rankingOption = useMemo(() => {
     const rows = dashboard?.inviteRanking || []
     return {
-      color: ['#10b981'],
+      color: rankingImageColors,
       tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
       grid: { left: 96, right: 28, top: 18, bottom: 28 },
       xAxis: {
@@ -1133,9 +1136,14 @@ function InviteStatsPage() {
       },
       series: [{
         type: 'bar',
-        data: rows.map((row) => row.invite_count),
+        data: rows.map((row, index) => ({
+          value: row.invite_count,
+          itemStyle: {
+            color: rankingImageColors[index % rankingImageColors.length],
+            borderRadius: [0, 8, 8, 0]
+          }
+        })),
         barWidth: 12,
-        itemStyle: { borderRadius: [0, 8, 8, 0] },
         label: { show: true, position: 'right' }
       }]
     }
@@ -1153,7 +1161,7 @@ function InviteStatsPage() {
   const safeGroupRankPage = Math.min(groupRankPage, groupRankPageCount)
   const groupRankStart = (safeGroupRankPage - 1) * GROUP_RANK_PAGE_SIZE
   const groupRankRows = groupRankingRows.slice(groupRankStart, groupRankStart + GROUP_RANK_PAGE_SIZE)
-  const maxGroupMemberCount = Math.max(1, ...groupRankingRows.map((group) => Number(group.member_count || 0)))
+  const maxGroupMemberCount = Math.max(500, ...groupRankingRows.map((group) => Number(group.member_count || 0)))
   const canManageTags = activeView === 'groups'
   const manualSelectedGroupExists = tagGroups.some((group) => group.group_id === manualInviteForm.groupId)
 
@@ -1324,7 +1332,7 @@ function InviteStatsPage() {
                       <b className={groupRankStart + index > 0 ? 'muted' : ''}>{groupRankStart + index + 1}</b>
                       <div>
                         <span>{group.group_name}</span>
-                        <div className="invite-mini-bar"><i style={{ width: `${Math.max(8, Math.round((Number(group.member_count || 0) / maxGroupMemberCount) * 100))}%` }} /></div>
+                        <div className="invite-mini-bar"><i style={{ width: `${Number(group.member_count || 0) <= 0 ? 0 : Math.max(2, Math.round((Number(group.member_count || 0) / maxGroupMemberCount) * 100))}%` }} /></div>
                       </div>
                       <strong>{formatNumber(group.member_count)} 人</strong>
                     </div>
@@ -1347,7 +1355,7 @@ function InviteStatsPage() {
               <div className="invite-panel-title">
                   <div>
                     <h2>邀请人数排行榜</h2>
-                    <p>【{selectedScopeLabel}】招募者 {dashboard?.inviteRanking?.length || 0} 名，有效入群人数 {formatNumber(cards?.totalMembers || 0)}</p>
+                    <p>【{selectedScopeLabel}】招募者 {dashboard?.inviteRanking?.length || 0} 名，入群人数 {formatNumber(cards?.totalMembers || 0)}</p>
                   </div>
                 <div className="invite-segment">
                   <button className={chartMode === 'bar' ? 'active' : ''} onClick={() => setChartMode('bar')} title="柱状图">
@@ -1366,7 +1374,7 @@ function InviteStatsPage() {
               </div>
               <div className="invite-ranking-tools">
                 <select value={rankingGroupId} onChange={(event) => setRankingGroupId(event.target.value)}>
-                  <option value="">当前活动下全部群</option>
+                  <option value="">{isAllActivitySelected ? '全部活动下全部群' : '当前活动下全部群'}</option>
                   {tagGroups.map((group) => (
                     <option key={group.group_id} value={group.group_id}>{group.group_name}</option>
                   ))}
@@ -1702,9 +1710,15 @@ function InviteStatsPage() {
               <label className="invite-manual-field">
                 <span className="invite-manual-field-head">
                   <span>被邀请人</span>
-                  <button type="button" className="invite-inline-copy-btn" onClick={() => void copyManualInviteName()} disabled={!((manualInviteForm.user || manualInviteDialog?.row.user || '').trim())}>
+                  <button
+                    type="button"
+                    className="invite-inline-copy-btn icon-only"
+                    onClick={() => void copyManualInviteName()}
+                    disabled={!((manualInviteForm.user || manualInviteDialog?.row.user || '').trim())}
+                    title="复制被邀请人昵称"
+                    aria-label="复制被邀请人昵称"
+                  >
                     <Copy size={14} />
-                    <span>复制</span>
                   </button>
                 </span>
                 <input
@@ -1868,7 +1882,7 @@ function InviteStatsPage() {
                 <button
                   type="button"
                   className="invite-danger-btn"
-                  onClick={() => void resetInviteStatsData()}
+                  onClick={requestResetInviteStatsData}
                   disabled={isSavingRemoteSync || isRemoteSyncing || isResettingInviteStats || resetConfirmText.trim() !== RESET_CONFIRM_TEXT}
                 >
                   {isResettingInviteStats ? <Loader2 size={16} className="spin" /> : <Trash2 size={16} />}
@@ -1898,6 +1912,48 @@ function InviteStatsPage() {
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {resetConfirmDialogOpen && (
+        <div
+          className="invite-modal-mask"
+          role="dialog"
+          aria-modal="true"
+          aria-label="恢复初始化确认"
+          onMouseDown={() => {
+            if (!isResettingInviteStats) setResetConfirmDialogOpen(false)
+          }}
+        >
+          <div className="invite-confirm-modal" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="invite-modal-title">
+              <div>
+                <h2>恢复初始化</h2>
+                <p>确认后会删除本地邀请统计记录，并清空远端邀请统计相关表数据。</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setResetConfirmDialogOpen(false)}
+                title="关闭"
+                disabled={isResettingInviteStats}
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="invite-confirm-message">
+              <AlertTriangle size={18} />
+              <span>该操作不可撤销。确认继续恢复初始化吗？</span>
+            </div>
+            <div className="invite-modal-actions">
+              <button type="button" onClick={() => setResetConfirmDialogOpen(false)} disabled={isResettingInviteStats}>
+                取消
+              </button>
+              <button className="invite-danger-btn" type="button" onClick={() => void resetInviteStatsData()} disabled={isResettingInviteStats}>
+                {isResettingInviteStats ? <Loader2 size={16} className="spin" /> : <Trash2 size={16} />}
+                <span>确定恢复初始化</span>
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
