@@ -186,6 +186,38 @@ textarea:focus {
   min-height: 42px;
 }
 
+.toolbar-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: end;
+  min-width: 0;
+}
+
+.refresh-latest-btn {
+  min-width: 148px;
+  min-height: 42px;
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--blue), var(--violet));
+  color: #fff;
+  box-shadow: 0 12px 24px rgba(55, 120, 229, 0.24);
+}
+
+.refresh-latest-btn:hover:not(:disabled) {
+  border-color: transparent;
+  background: linear-gradient(135deg, #2f6dd6, #6548d8);
+}
+
+.refresh-latest-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.refresh-latest-btn em {
+  min-width: 30px;
+  font-style: normal;
+  opacity: 0.88;
+}
+
 .error-banner,
 .notice-banner,
 .loading-line {
@@ -496,6 +528,28 @@ textarea:focus {
   font-weight: 950;
 }
 
+.group-rank-pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.group-rank-pagination > div {
+  display: flex;
+  gap: 8px;
+}
+
+.group-rank-pagination button {
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
 .ranking-panel {
   min-height: 506px;
 }
@@ -629,7 +683,7 @@ textarea:focus {
 
 .ranking-toolbar {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) 280px 86px;
+  grid-template-columns: minmax(180px, 1fr) 280px 86px 98px;
   gap: 10px;
   margin: 8px 18px 18px;
   padding: 10px;

@@ -1098,6 +1098,7 @@ export interface ElectronAPI {
       includeQuitMembers?: boolean
       minInviteCount?: number
       rankingGroupId?: string
+      dedupeMembers?: boolean
     }) => Promise<InviteStatsResult<InviteDashboardData>>
     getMemberTrace: (filters: InviteMemberTraceFilters) => Promise<InviteStatsResult<{ rows: InviteMemberTraceRow[]; total: number }>>
     listPending: (filters?: { tagId?: string }) => Promise<InviteStatsResult<InviteMemberTraceRow[]>>
@@ -1119,6 +1120,7 @@ export interface ElectronAPI {
       endTime?: number
       minInviteCount?: number
       groupId?: string
+      dedupeMembers?: boolean
     }) => Promise<{ success: boolean; count?: number; error?: string }>
     exportMemberTrace: (payload: InviteMemberTraceFilters & { filePath: string; format?: 'csv' | 'xlsx' }) => Promise<{
       success: boolean
