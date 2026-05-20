@@ -6,6 +6,7 @@ export type ActivityTag = {
 export type GroupOption = {
   id: string
   name: string
+  avatarUrl?: string
 }
 
 export type InviteRankingRow = {
@@ -28,6 +29,7 @@ export type HourlyDistributionRow = {
 export type RecentActivity = {
   eventType: 'invite' | 'quit'
   memberName: string
+  avatarUrl?: string
   sourceName: string
   sourceLabel: string
   groupName: string
@@ -52,11 +54,12 @@ export type DashboardData = {
 }
 
 export type TraceStatus = 'active' | 'quit' | 'pending'
-export type TraceAttribution = 'valid' | 'invalid' | 'pending'
+export type TraceAttribution = 'valid' | 'invalid' | 'pending' | 'none'
 
 export type MemberTraceRow = {
   id: string
   memberName: string
+  avatarUrl?: string
   wxid: string
   source: string
   groupId: string

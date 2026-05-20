@@ -3625,6 +3625,13 @@ function registerIpcHandlers() {
     return inviteStatsService.scanActivity(tagId)
   })
 
+  ipcMain.handle('inviteStats:checkQuitGroups', async (_, tagIdOrPayload: string | { tagId?: string }) => {
+    const tagId = typeof tagIdOrPayload === 'object'
+      ? String(tagIdOrPayload?.tagId || '')
+      : String(tagIdOrPayload || '')
+    return inviteStatsService.checkQuitGroups(tagId)
+  })
+
   ipcMain.handle('inviteStats:getScanStatus', async () => {
     return inviteStatsService.getScanStatus()
   })
@@ -3636,6 +3643,7 @@ function registerIpcHandlers() {
     includeQuitMembers?: boolean
     minInviteCount?: number
     rankingGroupId?: string
+    dedupeMembers?: boolean
   }) => {
     return inviteStatsService.getDashboard(input)
   })
@@ -3651,11 +3659,25 @@ function registerIpcHandlers() {
   ipcMain.handle('inviteStats:confirmPending', async (_, payload: {
     eventType: 'invite' | 'quit'
     eventId: string
+    groupId?: string
     wxId?: string
     inviterWxId?: string
     operatorWxId?: string
   }) => {
     return inviteStatsService.confirmPending(payload)
+  })
+
+  ipcMain.handle('inviteStats:addManualInviteRecord', async (_, payload: {
+    sourceEventId?: string
+    tagId: string
+    groupId: string
+    user: string
+    wxId: string
+    inviter: string
+    inviterWxId: string
+    inviteTime?: number
+  }) => {
+    return inviteStatsService.addManualInviteRecord(payload)
   })
 
   ipcMain.handle('inviteStats:ignorePending', async (_, payload: { eventType: 'invite' | 'quit'; eventId: string }) => {
@@ -3677,7 +3699,7 @@ function registerIpcHandlers() {
     return inviteStatsSyncService.getResolvedOptions()
   })
   ipcMain.handle('inviteStats:syncRemote', async (_, options?: { endpoint?: string; token?: string }) => {
-    return inviteStatsSyncService.queueSync(options)
+    return inviteStatsSyncService.queueSync({ ...options, full: true })
   })
   ipcMain.handle('inviteStats:resetAllData', async (_, options?: { endpoint?: string; token?: string }) => {
     return inviteStatsSyncService.resetAllData(options)
@@ -4298,9 +4320,11 @@ app.whenReady().then(async () => {
   })
   messagePushService.start()
   insightService.start()
+  inviteStatsService.setAfterScanSuccessCallback(() => inviteStatsSyncService.queueSync())
   inviteStatsService.startAutoScanScheduler()
+  inviteStatsService.startAutoQuitCheckScheduler()
   inviteStatsSyncService.startAutoSyncScheduler()
-  void inviteStatsSyncService.queueSync()
+  inviteStatsSyncService.startRemoteRefreshScheduler()
   await delay(200)
 
   // 已完成引导时，在 Splash 阶段预热核心数据（联系人、消息库索引等）

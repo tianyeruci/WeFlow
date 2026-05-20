@@ -249,15 +249,29 @@ export interface InviteMemberTraceRow {
   delete_flag: number
   valid_flag: number
   raw_content: string
+  parsed_content?: string
+  source_rule?: string
+  source_context_members?: string[]
   status: 'confirmed' | 'pending' | 'ignored'
   confidence: number
+}
+
+export interface InviteManualRecordPayload {
+  sourceEventId?: string
+  tagId: string
+  groupId: string
+  user: string
+  wxId: string
+  inviter: string
+  inviterWxId: string
+  inviteTime?: number
 }
 
 export interface InviteScanLog {
   id: string
   tag_id: string
   tag_name: string
-  scan_mode?: 'incremental'
+  scan_mode?: 'incremental' | 'quit-check'
   status: 'running' | 'completed' | 'failed' | 'skipped'
   started_at: number
   finished_at: number
@@ -1075,6 +1089,7 @@ export interface ElectronAPI {
     setGroupTag: (groupId: string, tagId: string) => Promise<InviteStatsResult>
     clearGroupTag: (groupId: string) => Promise<InviteStatsResult>
     scanActivity: (tagId: string) => Promise<{ success: boolean; started?: boolean; running?: boolean; log?: InviteScanLog; error?: string }>
+    checkQuitGroups: (tagId: string) => Promise<{ success: boolean; started?: boolean; running?: boolean; log?: InviteScanLog; error?: string }>
     getScanStatus: () => Promise<InviteStatsResult<{ running: boolean; active?: any; logs: InviteScanLog[] }>>
     getDashboard: (input: {
       tagId: string
@@ -1083,16 +1098,19 @@ export interface ElectronAPI {
       includeQuitMembers?: boolean
       minInviteCount?: number
       rankingGroupId?: string
+      dedupeMembers?: boolean
     }) => Promise<InviteStatsResult<InviteDashboardData>>
     getMemberTrace: (filters: InviteMemberTraceFilters) => Promise<InviteStatsResult<{ rows: InviteMemberTraceRow[]; total: number }>>
     listPending: (filters?: { tagId?: string }) => Promise<InviteStatsResult<InviteMemberTraceRow[]>>
     confirmPending: (payload: {
       eventType: 'invite' | 'quit'
       eventId: string
+      groupId?: string
       wxId?: string
       inviterWxId?: string
       operatorWxId?: string
     }) => Promise<InviteStatsResult>
+    addManualInviteRecord: (payload: InviteManualRecordPayload) => Promise<InviteStatsResult<InviteMemberTraceRow>>
     ignorePending: (payload: { eventType: 'invite' | 'quit'; eventId: string }) => Promise<InviteStatsResult>
     exportInviteRanking: (payload: {
       filePath: string
@@ -1102,6 +1120,7 @@ export interface ElectronAPI {
       endTime?: number
       minInviteCount?: number
       groupId?: string
+      dedupeMembers?: boolean
     }) => Promise<{ success: boolean; count?: number; error?: string }>
     exportMemberTrace: (payload: InviteMemberTraceFilters & { filePath: string; format?: 'csv' | 'xlsx' }) => Promise<{
       success: boolean

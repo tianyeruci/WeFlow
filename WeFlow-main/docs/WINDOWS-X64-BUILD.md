@@ -9,6 +9,7 @@
 - 打包目录：`D:\work\WeFlow\WeFlow-main`
 - 输出目录：`D:\work\WeFlow\WeFlow-main\release`
 - 不修改产品逻辑，只做环境检查、依赖确认、构建和产物检查。
+- 使用文档：`docs/WINDOWS-X64-USAGE.md`
 
 ## 本机已确认信息
 
@@ -179,6 +180,7 @@ Get-ChildItem -Recurse release -Include wx_key.dll,wcdb_api.dll,WCDB.dll,SDL2.dl
    - Node.js v24.14.0
    - npm 11.9.0
    - npm 依赖检查通过，关键包存在：electron、electron-builder、koffi、sherpa-onnx-node、ffmpeg-static、silk-wasm、fzstd。
+   - 已新增使用文档：docs/WINDOWS-X64-USAGE.md
 2. 资源检查：已执行
    - resources/runtime/win32 存在 VC++ 运行时 DLL。
    - resources/key/win32/x64 存在 wx_key.dll。
@@ -187,30 +189,37 @@ Get-ChildItem -Recurse release -Include wx_key.dll,wcdb_api.dll,WCDB.dll,SDL2.dl
    - electron/assets/wasm 存在 wasm_video_decode.js 和 wasm_video_decode.wasm。
 3. 类型检查/构建：已执行
    - npm run typecheck：通过。
-   - npm run build -- --win --x64：通过。
-   - 第一次在沙箱内构建时 Vite 加载配置阶段出现 spawn EPERM；改为在沙箱外执行后成功。
-   - electron-builder 首次构建时下载了 Electron v41.1.1 win32-x64、winCodeSign、NSIS、NSIS resources。
+   - npm run build -- --win --x64 -c.directories.output=release-win10-x64：Electron 打包阶段失败，原因是该参数被解析为配置文件路径；此前 tsc 与 Vite 构建已通过。
+   - npx electron-builder --win --x64：通过，使用 package.json 中的 release 输出目录。
+   - electron-builder 使用 Electron v41.1.1 win32-x64、winCodeSign、NSIS、NSIS resources；本机已有缓存时不会重复下载。
 4. release 产物检查：已执行
    - 生成安装包：release/WeFlow-4.3.0-Setup.exe
-   - 安装包大小：178107653 bytes
-   - SHA256：483DE2B58D2A61A250A92259F367E454FAC26AF34763A67003E153B9E0555AFF
+   - 安装包大小：178128642 bytes
+   - SHA256：C9BC95150D0E214B45D5748460CAB5D140A5711981FDB3CB64DA7FD9DDFF64A6
+   - latest.yml 已生成，指向 WeFlow-4.3.0-Setup.exe。
    - 生成解包目录：release/win-unpacked
    - 已确认关键运行文件存在：
      - release/win-unpacked/msvcp140.dll
+     - release/win-unpacked/msvcp140_1.dll
      - release/win-unpacked/vcruntime140.dll
+     - release/win-unpacked/vcruntime140_1.dll
      - release/win-unpacked/resources/resources/key/win32/x64/wx_key.dll
      - release/win-unpacked/resources/resources/wcdb/win32/x64/wcdb_api.dll
      - release/win-unpacked/resources/resources/wcdb/win32/x64/WCDB.dll
      - release/win-unpacked/resources/resources/wcdb/win32/x64/SDL2.dll
      - release/win-unpacked/resources/resources/wedecrypt/win32/x64/weflow-image-native-win32-x64.node
+     - release/win-unpacked/resources/assets/wasm/wasm_video_decode.js
      - release/win-unpacked/resources/assets/wasm/wasm_video_decode.wasm
      - release/win-unpacked/resources/app.asar.unpacked/node_modules/ffmpeg-static/ffmpeg.exe
      - release/win-unpacked/resources/app.asar.unpacked/node_modules/silk-wasm/lib/silk.wasm
      - release/win-unpacked/resources/app.asar.unpacked/node_modules/koffi/build/koffi/win32_x64/koffi.node
      - release/win-unpacked/resources/app.asar.unpacked/node_modules/sherpa-onnx-win-x64/sherpa-onnx.node
+     - docs/WINDOWS-X64-BUILD.md
+     - docs/WINDOWS-X64-USAGE.md
 5. 残余风险：
    - release/WeFlow-4.3.0-Setup.exe 未做代码签名，Windows SmartScreen 可能提示风险。
    - 尚未在干净 Win10+ x64 机器或虚拟机中执行安装、启动和微信数据功能验证。
+   - release 目录中还保留旧产物 release/WeFlow-4.3.0-Setup001.exe；本次最新产物是 release/WeFlow-4.3.0-Setup.exe。
    - installer.nsh 在当前 PowerShell 中显示为乱码，可能影响安装器中文提示文本，正式发布前建议单独确认编码。
    - 构建日志存在 Vite/Rolldown deprecated warning 和 chunk 体积 warning，不影响本次产物生成，但后续升级 Vite 9 前需要处理。
 ```

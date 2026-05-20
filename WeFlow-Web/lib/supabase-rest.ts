@@ -2,6 +2,7 @@ type QueryValue = string | number | boolean | null | undefined
 
 type WriteOptions = {
   onConflict?: string[]
+  returning?: boolean
 }
 
 export class RemoteDataError extends Error {
@@ -29,12 +30,34 @@ export async function supabaseUpsert<T extends Record<string, unknown>>(
   })
 }
 
+export async function supabaseInsert<T extends Record<string, unknown>>(
+  table: string,
+  rows: T[],
+  options: WriteOptions = {}
+) {
+  if (!rows.length) return [] as T[]
+  const prefer = options.returning === false ? 'return=minimal' : 'return=representation'
+  return requestSupabase<T[]>('POST', table, {}, rows, {
+    Prefer: prefer
+  })
+}
+
+export async function supabasePatch<T extends Record<string, unknown>>(
+  table: string,
+  query: Record<string, QueryValue>,
+  values: T
+) {
+  await requestSupabase('PATCH', table, query, values, {
+    Prefer: 'return=minimal'
+  })
+}
+
 export async function supabaseDelete(table: string, query: Record<string, QueryValue> = {}) {
   await requestSupabase('DELETE', table, query)
 }
 
 async function requestSupabase<T = unknown>(
-  method: 'GET' | 'POST' | 'DELETE',
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
   table: string,
   query: Record<string, QueryValue> = {},
   body?: unknown,

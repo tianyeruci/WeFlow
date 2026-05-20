@@ -223,6 +223,7 @@ select
   ie.member_name,
   ie.member_wxid as wx_id,
   ie.member_wxid as wxid,
+  coalesce(ie.raw_json->>'head_img', ie.raw_json->>'avatar_url', ie.raw_json->>'avatarUrl', '') as head_img,
   ie.inviter_name as inviter,
   ie.inviter_name,
   ie.inviter_wxid,
@@ -233,7 +234,8 @@ select
   ie.valid_flag,
   ie.delete_flag,
   ie.raw_message as raw_content,
-  ie.raw_message as source_raw_content
+  ie.raw_message as source_raw_content,
+  ie.raw_json
 from invite_events ie
 left join activity_tags at on at.id = ie.activity_tag_id
 
@@ -251,6 +253,7 @@ select
   qe.member_name,
   qe.member_wxid as wx_id,
   qe.member_wxid as wxid,
+  coalesce(qe.raw_json->>'head_img', qe.raw_json->>'avatar_url', qe.raw_json->>'avatarUrl', '') as head_img,
   null::varchar(255) as inviter,
   null::varchar(255) as inviter_name,
   null::varchar(128) as inviter_wxid,
@@ -261,7 +264,8 @@ select
   qe.valid_flag,
   qe.delete_flag,
   qe.raw_message as raw_content,
-  qe.raw_message as source_raw_content
+  qe.raw_message as source_raw_content,
+  qe.raw_json
 from quit_events qe
 left join activity_tags at on at.id = qe.activity_tag_id;
 

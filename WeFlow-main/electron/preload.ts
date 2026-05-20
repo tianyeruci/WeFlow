@@ -444,6 +444,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     setGroupTag: (groupId: string, tagId: string) => ipcRenderer.invoke('inviteStats:setGroupTag', groupId, tagId),
     clearGroupTag: (groupId: string) => ipcRenderer.invoke('inviteStats:clearGroupTag', groupId),
     scanActivity: (tagId: string) => ipcRenderer.invoke('inviteStats:scanActivity', tagId),
+    checkQuitGroups: (tagId: string) => ipcRenderer.invoke('inviteStats:checkQuitGroups', tagId),
     getScanStatus: () => ipcRenderer.invoke('inviteStats:getScanStatus'),
     getDashboard: (input: {
       tagId: string
@@ -452,16 +453,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
       includeQuitMembers?: boolean
       minInviteCount?: number
       rankingGroupId?: string
+      dedupeMembers?: boolean
     }) => ipcRenderer.invoke('inviteStats:getDashboard', input),
     getMemberTrace: (filters: any) => ipcRenderer.invoke('inviteStats:getMemberTrace', filters),
     listPending: (filters?: { tagId?: string }) => ipcRenderer.invoke('inviteStats:listPending', filters),
     confirmPending: (payload: {
       eventType: 'invite' | 'quit'
       eventId: string
+      groupId?: string
       wxId?: string
       inviterWxId?: string
       operatorWxId?: string
     }) => ipcRenderer.invoke('inviteStats:confirmPending', payload),
+    addManualInviteRecord: (payload: {
+      sourceEventId?: string
+      tagId: string
+      groupId: string
+      user: string
+      wxId: string
+      inviter: string
+      inviterWxId: string
+      inviteTime?: number
+    }) => ipcRenderer.invoke('inviteStats:addManualInviteRecord', payload),
     ignorePending: (payload: { eventType: 'invite' | 'quit'; eventId: string }) =>
       ipcRenderer.invoke('inviteStats:ignorePending', payload),
     exportInviteRanking: (payload: any) => ipcRenderer.invoke('inviteStats:exportInviteRanking', payload),

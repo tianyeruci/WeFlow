@@ -12,7 +12,7 @@ type InviteEventStatus = 'confirmed' | 'pending' | 'ignored'
 type JoinType = 'invite' | 'qrcode' | 'direct' | 'unknown'
 type QuitType = 'self_quit' | 'removed' | 'unknown'
 type ScanStatus = 'running' | 'completed' | 'failed' | 'skipped'
-type ScanMode = 'incremental'
+type ScanMode = 'incremental' | 'quit-check'
 type ExportFormat = 'csv' | 'xlsx'
 
 export interface InviteActivityTag {
@@ -30,9 +30,11 @@ export interface InviteGroupTagBinding {
   id: string
   group_id: string
   group_name: string
+  avatar_url?: string
   tag_id: string
   tag_name: string
   enabled: boolean
+  member_count: number
   last_scan_time: number
   last_invite_time: number
   last_message_id: string
@@ -60,6 +62,8 @@ export interface InviteEvent {
   valid_flag: number
   raw_content: string
   parsed_content: string
+  source_rule?: string
+  source_context_members?: string[]
   source_message_id: string
   source_local_id: number
   source_create_time: number
@@ -89,6 +93,8 @@ export interface QuitEvent {
   operator_wx_id: string
   raw_content: string
   parsed_content: string
+  source_rule?: string
+  source_context_members?: string[]
   source_message_id: string
   source_local_id: number
   source_create_time: number
@@ -145,6 +151,9 @@ export interface InviteRawEvent {
   member_wxid: string
   related_name: string
   related_wxid: string
+  head_img?: string
+  source_rule?: string
+  source_context_members?: string[]
   join_type?: JoinType
   quit_type?: QuitType
   delete_flag: number
@@ -192,6 +201,21 @@ export interface InviteRemoteSyncPayload {
   scanLogs: Array<Record<string, unknown>>
 }
 
+export interface InviteSyncSnapshot {
+  activityTags: Map<string, number>
+  groupTagBindings: Map<string, number>
+  rawEvents: Map<string, number>
+  inviteEvents: Map<string, number>
+  quitEvents: Map<string, number>
+  memberIdentityBindings: Map<string, number>
+  scanLogs: Map<string, number>
+}
+
+export interface InviteRemoteSyncPayloadBundle {
+  payload: InviteRemoteSyncPayload
+  snapshot: InviteSyncSnapshot
+}
+
 interface ParsedSystemEvent {
   type: 'join' | 'quit'
   joinType?: JoinType
@@ -199,6 +223,8 @@ interface ParsedSystemEvent {
   user: string
   inviter?: string
   operator?: string
+  sourceRule?: string
+  sourceContextMembers?: string[]
   confidence: number
 }
 
@@ -209,6 +235,7 @@ interface MatchResult {
   candidates: Array<{ wxId: string; displayName: string; avatarUrl?: string }>
   status: InviteEventStatus
   reason: string
+  matchedMember?: GroupMember
 }
 
 interface GroupContext {
@@ -258,6 +285,17 @@ interface MemberTraceFilters {
   offset?: number
 }
 
+interface ManualInviteRecordPayload {
+  sourceEventId?: string
+  tagId: string
+  groupId: string
+  user: string
+  wxId: string
+  inviter: string
+  inviterWxId: string
+  inviteTime?: number
+}
+
 interface MemberTraceRow {
   id: string
   event_type: 'invite' | 'quit'
@@ -281,6 +319,8 @@ interface MemberTraceRow {
   invited_count: number
   raw_content: string
   parsed_content: string
+  source_rule?: string
+  source_context_members?: string[]
 }
 
 const createEmptyScope = (): InviteStatsScopeData => ({
@@ -295,6 +335,7 @@ const createEmptyScope = (): InviteStatsScopeData => ({
 
 const normalizeText = (value: unknown): string => String(value || '').trim()
 const normalizeIdentityText = (value: unknown): string => normalizeText(value).replace(/\s+/g, ' ').toLowerCase()
+const ALL_ACTIVITY_TAG_ID = '__all__'
 
 class InviteStatsService {
   private readonly fileVersion = 1
@@ -315,6 +356,8 @@ class InviteStatsService {
   } | null = null
   private autoScanTimer: ReturnType<typeof setInterval> | null = null
   private autoScanStarted = false
+  private autoQuitCheckTimer: ReturnType<typeof setTimeout> | null = null
+  private autoQuitCheckStarted = false
   private afterScanSuccess: (() => void | Promise<void>) | null = null
 
   constructor() {
@@ -501,11 +544,33 @@ class InviteStatsService {
     return users
   }
 
+  private splitBackgroundInviteMembers(text: string): string[] {
+    return normalizeText(text)
+      .replace(/[“”]/g, '"')
+      .replace(/[‘’]/g, "'")
+      .split(/[、,，\n\r]/)
+      .map((item) => normalizeText(item).replace(/^[\"']+|[\"']+$/g, '').trim())
+      .filter(Boolean)
+  }
+
   private parseSystemEvents(text: string): ParsedSystemEvent[] {
     const normalized = normalizeText(text)
       .replace(/[。.!！]+$/g, '')
       .replace(/\s+/g, ' ')
     if (!normalized) return []
+
+    const backgroundInvite = /^["']?(.+?)["']?邀请你加入了群聊[，,]\s*群聊参与人还有[:：]\s*([\s\S]+)$/u.exec(normalized)
+    if (backgroundInvite) {
+      return [{
+        type: 'join',
+        joinType: 'invite',
+        user: '你',
+        inviter: normalizeText(backgroundInvite[1]),
+        sourceRule: 'background-invite',
+        sourceContextMembers: this.splitBackgroundInviteMembers(backgroundInvite[2]),
+        confidence: 0.94
+      }]
+    }
 
     const qrcode = /^["']?(.+?)["']?通过扫描["']?(.+?)["']?分享的二维码加入(?:了)?群聊$/.exec(normalized)
     if (qrcode) {
@@ -514,6 +579,7 @@ class InviteStatsService {
         joinType: 'qrcode',
         user: normalizeText(qrcode[1]),
         inviter: normalizeText(qrcode[2]) || '未知来源',
+        sourceRule: 'qrcode',
         confidence: 0.94
       }]
     }
@@ -527,6 +593,7 @@ class InviteStatsService {
         joinType: 'invite',
         inviter,
         user,
+        sourceRule: 'invite',
         confidence: 0.96
       }))
     }
@@ -538,6 +605,7 @@ class InviteStatsService {
         quitType: 'removed',
         user: normalizeText(removed[1]),
         operator: normalizeText(removed[2]),
+        sourceRule: 'removed',
         confidence: 0.94
       }]
     }
@@ -548,6 +616,7 @@ class InviteStatsService {
         type: 'quit',
         quitType: 'self_quit',
         user: normalizeText(quit[1]),
+        sourceRule: 'quit',
         confidence: 0.94
       }]
     }
@@ -558,6 +627,7 @@ class InviteStatsService {
         type: 'join',
         joinType: 'direct',
         user: normalizeText(direct[1]),
+        sourceRule: 'direct',
         confidence: 0.9
       }]
     }
@@ -574,6 +644,14 @@ class InviteStatsService {
       member.alias,
       member.username
     ].map(normalizeText).filter(Boolean)
+  }
+
+  private getGroupMemberIdentityKeys(member: GroupMember): string[] {
+    const keys = [
+      this.cleanAccountDirName(normalizeText(member.username)),
+      ...this.getMemberDisplayFields(member).map(normalizeIdentityText)
+    ].filter(Boolean)
+    return Array.from(new Set(keys))
   }
 
   private matchCurrentAccountMember(members: GroupMember[], fallbackDisplayName: string): MatchResult {
@@ -597,7 +675,8 @@ class InviteStatsService {
       avatarUrl: member?.avatarUrl || '',
       candidates: [],
       status: 'confirmed',
-      reason: member ? 'current-account-group-match' : 'current-account-config'
+      reason: member ? 'current-account-group-match' : 'current-account-config',
+      matchedMember: member
     }
   }
 
@@ -634,7 +713,8 @@ class InviteStatsService {
         avatarUrl: manualMember?.avatarUrl || '',
         candidates: [],
         status: 'confirmed',
-        reason: 'manual-binding'
+        reason: 'manual-binding',
+        matchedMember: manualMember
       }
     }
 
@@ -651,7 +731,8 @@ class InviteStatsService {
         avatarUrl: member.avatarUrl || '',
         candidates: [],
         status: 'confirmed',
-        reason: 'unique-group-match'
+        reason: 'unique-group-match',
+        matchedMember: member
       }
     }
 
@@ -730,6 +811,122 @@ class InviteStatsService {
     row.updated_at = now
   }
 
+  private rawValueEquals(left: unknown, right: unknown): boolean {
+    if (Array.isArray(left) || Array.isArray(right)) {
+      return JSON.stringify(left || []) === JSON.stringify(right || [])
+    }
+    return left === right
+  }
+
+  private isKnownRelatedName(name: string): boolean {
+    const normalized = normalizeText(name)
+    if (!normalized) return false
+    const lowered = normalized.toLowerCase()
+    return lowered !== 'unknown' && normalized !== '未知来源'
+  }
+
+  private getBoundGroupBinding(
+    data: InviteStatsScopeData,
+    groupId: string,
+    tagId: string
+  ): InviteGroupTagBinding | undefined {
+    return data.groupTagBindings.find((binding) =>
+      binding.enabled && binding.group_id === groupId && binding.tag_id === tagId
+    )
+  }
+
+  private isAllActivityScope(tagId: string): boolean {
+    const normalized = normalizeText(tagId)
+    return !normalized || normalized === ALL_ACTIVITY_TAG_ID
+  }
+
+  private getScopedBindings(data: InviteStatsScopeData, tagId: string): InviteGroupTagBinding[] {
+    const bindings = this.isAllActivityScope(tagId)
+      ? data.groupTagBindings.filter((binding) => binding.enabled)
+      : this.getEnabledBindingsForTag(data, tagId)
+    const byGroupId = new Map<string, InviteGroupTagBinding>()
+    for (const binding of bindings) {
+      if (!binding.group_id) continue
+      const existing = byGroupId.get(binding.group_id)
+      if (!existing || (binding.updated_at || 0) > (existing.updated_at || 0)) {
+        byGroupId.set(binding.group_id, binding)
+      }
+    }
+    return Array.from(byGroupId.values())
+  }
+
+  private dedupeInviteEventsByMemberKey(events: InviteEvent[]): InviteEvent[] {
+    const buckets = new Map<string, InviteEvent>()
+    for (const event of events.slice().sort((a, b) => {
+      const inviteDiff = a.invite_time - b.invite_time
+      if (inviteDiff !== 0) return inviteDiff
+      const sourceDiff = a.source_create_time - b.source_create_time
+      if (sourceDiff !== 0) return sourceDiff
+      return String(a.source_message_id || a.id).localeCompare(String(b.source_message_id || b.id))
+    })) {
+      const key = this.getMemberKey(event)
+      if (!key || buckets.has(key)) continue
+      buckets.set(key, event)
+    }
+    return Array.from(buckets.values())
+  }
+
+  private getDashboardInviteEvents(data: InviteStatsScopeData, tagId: string, dedupeMembers: boolean): InviteEvent[] {
+    const scoped = this.getScopedInviteEvents(data, tagId)
+    if (!dedupeMembers) {
+      return scoped.slice().sort((a, b) => a.invite_time - b.invite_time)
+    }
+    if (this.isAllActivityScope(tagId)) {
+      return this.dedupeInviteEventsByMemberKey(
+        scoped.filter((event) => event.status === 'confirmed' && event.valid_flag === 1 && this.getMemberKey(event))
+      )
+    }
+    return this.getEffectiveInviteEvents(data, tagId)
+  }
+
+  private findGroupMemberByWxId(members: GroupMember[], wxId: string): GroupMember | undefined {
+    const normalized = this.cleanAccountDirName(normalizeText(wxId))
+    if (!normalized) return undefined
+    return members.find((member) => this.cleanAccountDirName(normalizeText(member.username)) === normalized)
+  }
+
+  private getPreferredMemberName(member: GroupMember | undefined, fallbackName: string, fallbackWxId: string): string {
+    if (!member) return normalizeText(fallbackName) || normalizeText(fallbackWxId)
+    return normalizeText(member.displayName) ||
+      normalizeText(member.groupNickname) ||
+      normalizeText(member.remark) ||
+      normalizeText(member.nickname) ||
+      normalizeText(member.alias) ||
+      normalizeText(member.username) ||
+      normalizeText(fallbackName) ||
+      normalizeText(fallbackWxId)
+  }
+
+  private async resolveManualIdentity(
+    groupId: string,
+    wxId: string,
+    fallbackName: string,
+    members?: GroupMember[]
+  ): Promise<{ wxId: string; displayName: string; avatarUrl: string; member?: GroupMember }> {
+    const normalizedWxId = normalizeText(wxId)
+    const groupMembers = members || await this.loadGroupMembers(groupId)
+    const member = this.findGroupMemberByWxId(groupMembers, normalizedWxId)
+    const contact = await chatService.getContactAvatar(member?.username || normalizedWxId)
+    const resolvedWxId = member?.username || normalizedWxId
+    const displayName = this.getPreferredMemberName(member, contact?.displayName || fallbackName, resolvedWxId)
+    return {
+      wxId: resolvedWxId,
+      displayName,
+      avatarUrl: normalizeText(member?.avatarUrl || contact?.avatarUrl || ''),
+      member
+    }
+  }
+
+  private async loadGroupMembers(groupId: string): Promise<GroupMember[]> {
+    const result = await groupAnalyticsService.getGroupMembers(groupId)
+    return result.success && result.data ? result.data : []
+  }
+
   private isSyncDirty(row: { sync_status?: string; last_sync_at?: number; updated_at?: number; finished_at?: number; started_at?: number }): boolean {
     const updatedAt = Number(row.updated_at || row.finished_at || row.started_at || 0)
     const lastSyncAt = Number(row.last_sync_at || 0)
@@ -754,6 +951,13 @@ class InviteStatsService {
   }
 
   private isEventInCurrentTag(data: InviteStatsScopeData, event: { group_id: string; activity_tag_id: string }, tagId: string): boolean {
+    if (this.isAllActivityScope(tagId)) {
+      return data.groupTagBindings.some((binding) =>
+        binding.enabled &&
+        binding.group_id === event.group_id &&
+        binding.tag_id === event.activity_tag_id
+      )
+    }
     return event.activity_tag_id === tagId && this.isGroupBoundToTag(data, event.group_id, tagId)
   }
 
@@ -784,6 +988,7 @@ class InviteStatsService {
         member_wxid: event.wx_id,
         related_name: event.inviter,
         related_wxid: event.inviter_wx_id,
+        head_img: event.head_img,
         join_type: event.join_type,
         delete_flag: event.delete_flag,
         valid_flag: event.valid_flag,
@@ -795,11 +1000,13 @@ class InviteStatsService {
         source_create_time: event.source_create_time,
         raw_content: event.raw_content,
         parsed_content: event.parsed_content,
+        source_rule: event.source_rule,
+        source_context_members: event.source_context_members,
         confidence: event.confidence
       }
       let changed = false
       for (const [key, value] of Object.entries(updates)) {
-        if ((existing as Record<string, unknown>)[key] !== value) {
+        if (!this.rawValueEquals((existing as Record<string, unknown>)[key], value)) {
           ;(existing as Record<string, unknown>)[key] = value
           changed = true
         }
@@ -817,6 +1024,7 @@ class InviteStatsService {
       member_wxid: event.wx_id,
       related_name: event.inviter,
       related_wxid: event.inviter_wx_id,
+      head_img: event.head_img,
       join_type: event.join_type,
       delete_flag: event.delete_flag,
       valid_flag: event.valid_flag,
@@ -829,6 +1037,8 @@ class InviteStatsService {
       source_create_time: event.source_create_time,
       raw_content: event.raw_content,
       parsed_content: event.parsed_content,
+      source_rule: event.source_rule,
+      source_context_members: event.source_context_members,
       confidence: event.confidence,
       sync_status: 'dirty',
       sync_error: '',
@@ -851,6 +1061,7 @@ class InviteStatsService {
         member_wxid: event.wx_id,
         related_name: event.operator,
         related_wxid: event.operator_wx_id,
+        head_img: event.head_img,
         quit_type: event.quit_type,
         delete_flag: 1,
         valid_flag: 0,
@@ -862,11 +1073,13 @@ class InviteStatsService {
         source_create_time: event.source_create_time,
         raw_content: event.raw_content,
         parsed_content: event.parsed_content,
+        source_rule: event.source_rule,
+        source_context_members: event.source_context_members,
         confidence: event.confidence
       }
       let changed = false
       for (const [key, value] of Object.entries(updates)) {
-        if ((existing as Record<string, unknown>)[key] !== value) {
+        if (!this.rawValueEquals((existing as Record<string, unknown>)[key], value)) {
           ;(existing as Record<string, unknown>)[key] = value
           changed = true
         }
@@ -884,6 +1097,7 @@ class InviteStatsService {
       member_wxid: event.wx_id,
       related_name: event.operator,
       related_wxid: event.operator_wx_id,
+      head_img: event.head_img,
       quit_type: event.quit_type,
       delete_flag: 1,
       valid_flag: 0,
@@ -896,6 +1110,8 @@ class InviteStatsService {
       source_create_time: event.source_create_time,
       raw_content: event.raw_content,
       parsed_content: event.parsed_content,
+      source_rule: event.source_rule,
+      source_context_members: event.source_context_members,
       confidence: event.confidence,
       sync_status: 'dirty',
       sync_error: '',
@@ -906,9 +1122,11 @@ class InviteStatsService {
     return true
   }
 
-  private syncRawEventsFromMaterialized(data: InviteStatsScopeData): void {
-    for (const event of data.inviteEvents) this.upsertRawEventFromInvite(data, event)
-    for (const event of data.quitEvents) this.upsertRawEventFromQuit(data, event)
+  private syncRawEventsFromMaterialized(data: InviteStatsScopeData): boolean {
+    let changed = false
+    for (const event of data.inviteEvents) changed = this.upsertRawEventFromInvite(data, event) || changed
+    for (const event of data.quitEvents) changed = this.upsertRawEventFromQuit(data, event) || changed
+    return changed
   }
 
   private hasInviteEvent(data: InviteStatsScopeData, candidate: Partial<InviteEvent>): boolean {
@@ -968,8 +1186,74 @@ class InviteStatsService {
     })
   }
 
-  private recomputeFlags(data: InviteStatsScopeData): void {
+  private ensureMemberAliasBindings(
+    data: InviteStatsScopeData,
+    groupId: string,
+    member: GroupMember | undefined,
+    source: 'auto' | 'manual' = 'auto'
+  ): void {
+    if (!member?.username) return
+    for (const displayName of this.getMemberDisplayFields(member)) {
+      this.ensureIdentityBinding(data, groupId, displayName, member.username, source)
+    }
+  }
+
+  private hydrateEventIdentityBindings(data: InviteStatsScopeData): boolean {
+    let changed = false
+    const now = this.nowSeconds()
+    for (const event of data.inviteEvents) {
+      if (!event.wx_id) {
+        const wxId = this.findManualBinding(data, event.group_id, event.user)
+        if (wxId) {
+          event.wx_id = wxId
+          this.markSyncDirty(event, now)
+          changed = true
+        }
+      }
+      if (event.wx_id && event.status === 'pending') {
+        event.status = 'confirmed'
+        this.markSyncDirty(event, now)
+        changed = true
+      }
+      if (!event.inviter_wx_id && event.inviter && event.inviter !== '鏈煡鏉ユ簮') {
+        const inviterWxId = this.findManualBinding(data, event.group_id, event.inviter)
+        if (inviterWxId) {
+          event.inviter_wx_id = inviterWxId
+          this.markSyncDirty(event, now)
+          changed = true
+        }
+      }
+    }
+    for (const event of data.quitEvents) {
+      if (!event.wx_id) {
+        const wxId = this.findManualBinding(data, event.group_id, event.user)
+        if (wxId) {
+          event.wx_id = wxId
+          this.markSyncDirty(event, now)
+          changed = true
+        }
+      }
+      if (event.wx_id && event.status === 'pending') {
+        event.status = 'confirmed'
+        this.markSyncDirty(event, now)
+        changed = true
+      }
+      if (!event.operator_wx_id && event.operator) {
+        const operatorWxId = this.findManualBinding(data, event.group_id, event.operator)
+        if (operatorWxId) {
+          event.operator_wx_id = operatorWxId
+          this.markSyncDirty(event, now)
+          changed = true
+        }
+      }
+    }
+    return changed
+  }
+
+  private recomputeFlags(data: InviteStatsScopeData): boolean {
+
     const nextFlags = new Map<string, number>()
+    let changed = this.hydrateEventIdentityBindings(data)
     for (const event of data.inviteEvents) nextFlags.set(event.id, -1)
     const groupsByActivityUser = new Map<string, InviteEvent[]>()
     for (const event of data.inviteEvents) {
@@ -1003,9 +1287,10 @@ class InviteStatsService {
       if (event.valid_flag !== nextValidFlag) {
         event.valid_flag = nextValidFlag
         this.markSyncDirty(event)
+        changed = true
       }
     }
-    this.syncRawEventsFromMaterialized(data)
+    return this.syncRawEventsFromMaterialized(data) || changed
   }
 
   private applyQuitEventToInviteFlags(data: InviteStatsScopeData, quitEvent: QuitEvent): void {
@@ -1041,6 +1326,44 @@ class InviteStatsService {
     return map
   }
 
+  private normalizeMemberCount(value: unknown): number {
+    return Math.max(0, Math.floor(Number(value || 0)))
+  }
+
+  private refreshBindingMemberCounts(data: InviteStatsScopeData, groups: GroupChatInfo[], now = this.nowSeconds()): boolean {
+    const groupById = new Map(groups.map((group) => [group.username, group]))
+    let changed = false
+    for (const binding of data.groupTagBindings) {
+      const group = groupById.get(binding.group_id)
+      if (!group) continue
+      const nextCount = this.normalizeMemberCount(group.memberCount)
+      const nextName = normalizeText(group.displayName || group.username || binding.group_name || binding.group_id)
+      const nextAvatarUrl = normalizeText(group.avatarUrl)
+      if (typeof binding.member_count !== 'number' || this.normalizeMemberCount(binding.member_count) !== nextCount) {
+        binding.member_count = nextCount
+        this.markSyncDirty(binding, now)
+        changed = true
+      }
+      if (nextName && binding.group_name !== nextName) {
+        binding.group_name = nextName
+        this.markSyncDirty(binding, now)
+        changed = true
+      }
+      if (nextAvatarUrl && binding.avatar_url !== nextAvatarUrl) {
+        binding.avatar_url = nextAvatarUrl
+        this.markSyncDirty(binding, now)
+        changed = true
+      }
+    }
+    return changed
+  }
+
+  private async refreshBindingMemberCountsFromSource(data: InviteStatsScopeData): Promise<boolean> {
+    const result = await groupAnalyticsService.getGroupChats()
+    if (!result.success || !result.data) return false
+    return this.refreshBindingMemberCounts(data, result.data)
+  }
+
   private async getGroupContext(data: InviteStatsScopeData, binding: InviteGroupTagBinding): Promise<GroupContext> {
     const membersResult = await groupAnalyticsService.getGroupMembers(binding.group_id)
     const members = membersResult.success && membersResult.data ? membersResult.data : []
@@ -1065,15 +1388,18 @@ class InviteStatsService {
     const inviterMatch = inviterRaw && inviterRaw !== '未知来源'
       ? this.matchMemberByDisplayName(data, context.groupId, inviterRaw, context.members)
       : { wxId: '', displayName: inviterRaw || '', avatarUrl: '', candidates: [], status: 'confirmed' as InviteEventStatus, reason: 'no-inviter' }
-    const status: InviteEventStatus = userMatch.status === 'confirmed' && (parsed.joinType === 'direct' || parsed.joinType === 'qrcode' || !inviterRaw || inviterMatch.status === 'confirmed')
+    const isBackgroundInvite = parsed.sourceRule === 'background-invite'
+    const status: InviteEventStatus = !isBackgroundInvite && userMatch.status === 'confirmed' && (parsed.joinType === 'direct' || parsed.joinType === 'qrcode' || !inviterRaw || inviterMatch.status === 'confirmed')
       ? 'confirmed'
       : 'pending'
     const now = this.nowSeconds()
 
     if (status === 'confirmed') {
       this.ensureIdentityBinding(data, context.groupId, parsed.user, userMatch.wxId, 'auto')
+      this.ensureMemberAliasBindings(data, context.groupId, userMatch.matchedMember, 'auto')
       if (inviterRaw && inviterRaw !== '未知来源' && inviterMatch.wxId) {
         this.ensureIdentityBinding(data, context.groupId, inviterRaw, inviterMatch.wxId, 'auto')
+        this.ensureMemberAliasBindings(data, context.groupId, inviterMatch.matchedMember, 'auto')
       }
     }
 
@@ -1094,6 +1420,8 @@ class InviteStatsService {
       valid_flag: -1,
       raw_content: message.rawContent || message.content || '',
       parsed_content: parsedContent,
+      source_rule: parsed.sourceRule || '',
+      source_context_members: parsed.sourceContextMembers || [],
       source_message_id: message.serverIdRaw || String(message.serverId || ''),
       source_local_id: message.localId || 0,
       source_create_time: message.createTime || now,
@@ -1128,8 +1456,10 @@ class InviteStatsService {
 
     if (status === 'confirmed') {
       this.ensureIdentityBinding(data, context.groupId, parsed.user, userMatch.wxId, 'auto')
+      this.ensureMemberAliasBindings(data, context.groupId, userMatch.matchedMember, 'auto')
       if (operatorRaw && operatorMatch.wxId) {
         this.ensureIdentityBinding(data, context.groupId, operatorRaw, operatorMatch.wxId, 'auto')
+        this.ensureMemberAliasBindings(data, context.groupId, operatorMatch.matchedMember, 'auto')
       }
     }
 
@@ -1148,6 +1478,8 @@ class InviteStatsService {
       operator_wx_id: operatorMatch.wxId || '',
       raw_content: message.rawContent || message.content || '',
       parsed_content: parsedContent,
+      source_rule: parsed.sourceRule || '',
+      source_context_members: parsed.sourceContextMembers || [],
       source_message_id: message.serverIdRaw || String(message.serverId || ''),
       source_local_id: message.localId || 0,
       source_create_time: message.createTime || now,
@@ -1183,6 +1515,11 @@ class InviteStatsService {
       normalizeIdentityText(event.user || event.member_name || '')
   }
 
+  private getInviteEventTimelineTime(event: InviteEvent): number {
+    if (event.delete_flag === 1) return event.updated_at || event.invite_time || 0
+    return event.invite_time || 0
+  }
+
   private getEffectiveInviteEvents(data: InviteStatsScopeData, tagId: string): InviteEvent[] {
     return this.getScopedInviteEvents(data, tagId)
       .filter((event) => event.status === 'confirmed' && event.valid_flag === 1 && this.getMemberKey(event))
@@ -1210,18 +1547,25 @@ class InviteStatsService {
     startTime?: number,
     endTime?: number,
     minInviteCount = 0,
-    groupId?: string
+    groupId?: string,
+    dedupeMembers = true
   ): InviteRankingRow[] {
     const normalizedGroupId = normalizeText(groupId)
-    const effective = this.filterByTime(this.getEffectiveInviteEvents(data, tagId), startTime, endTime)
+    const sourceEvents = dedupeMembers
+      ? this.getDashboardInviteEvents(data, tagId, true)
+      : this.getScopedInviteEvents(data, tagId)
+    const effective = this.filterByTime(sourceEvents, startTime, endTime)
       .filter((event) => {
         if (normalizedGroupId && event.group_id !== normalizedGroupId) return false
-        if (event.join_type === 'invite') return Boolean(event.inviter || event.inviter_wx_id)
-        if (event.join_type === 'qrcode') return Boolean(event.inviter && event.inviter !== '未知来源')
-        return false
+        if (dedupeMembers) {
+          if (event.join_type === 'invite') return Boolean(event.inviter || event.inviter_wx_id)
+          if (event.join_type === 'qrcode') return Boolean(event.inviter && event.inviter !== '鏈煡鏉ユ簮')
+          return false
+        }
+        return true
       })
 
-    const buckets = new Map<string, { inviter: string; inviter_wx_id: string; users: Set<string>; groups: Set<string>; recent: number }>()
+    const buckets = new Map<string, { inviter: string; inviter_wx_id: string; users: Set<string>; groups: Set<string>; count: number; recent: number }>()
     for (const event of effective) {
       const key = event.inviter_wx_id || normalizeIdentityText(event.inviter)
       if (!key) continue
@@ -1230,9 +1574,15 @@ class InviteStatsService {
         inviter_wx_id: event.inviter_wx_id,
         users: new Set<string>(),
         groups: new Set<string>(),
+        count: 0,
         recent: 0
       }
-      bucket.users.add(this.getMemberKey(event))
+      if (dedupeMembers) {
+        const memberKey = this.getMemberKey(event)
+        if (memberKey) bucket.users.add(memberKey)
+      } else {
+        bucket.count += 1
+      }
       bucket.groups.add(event.group_id)
       bucket.recent = Math.max(bucket.recent, event.invite_time)
       buckets.set(key, bucket)
@@ -1243,7 +1593,7 @@ class InviteStatsService {
         rank: 0,
         inviter: bucket.inviter,
         inviter_wx_id: bucket.inviter_wx_id,
-        invite_count: bucket.users.size,
+        invite_count: dedupeMembers ? bucket.users.size : bucket.count,
         group_count: bucket.groups.size,
         recent_invite_time: bucket.recent
       }))
@@ -1263,6 +1613,7 @@ class InviteStatsService {
   }
 
   async listActivityTags(): Promise<{ success: boolean; data?: InviteActivityTag[]; error?: string }> {
+
     try {
       const data = this.getScope()
       return { success: true, data: data.activityTags.slice().sort((a, b) => b.updated_at - a.updated_at) }
@@ -1271,16 +1622,25 @@ class InviteStatsService {
     }
   }
 
-  exportCurrentScopeSyncPayload(options: { dirtyOnly?: boolean } = {}): InviteRemoteSyncPayload {
+  async exportCurrentScopeSyncPayload(options: { dirtyOnly?: boolean } = {}): Promise<InviteRemoteSyncPayloadBundle> {
     const data = this.getScope()
-    this.recomputeFlags(data)
-    this.persist()
+    let changed = this.recomputeFlags(data)
+    changed = await this.refreshBindingMemberCountsFromSource(data) || changed
+    if (changed) this.persist()
     const accountScope = this.getCurrentScopeKey()
     const shouldInclude = (row: Record<string, any>) => !options.dirtyOnly || this.isSyncDirty(row)
-
-    return {
+    const includedGroupTagBindings = data.groupTagBindings.filter(shouldInclude)
+    const requiredActivityTagIds = new Set(
+      includedGroupTagBindings
+        .map((binding) => normalizeText(binding.tag_id))
+        .filter(Boolean)
+    )
+    const includedActivityTags = data.activityTags.filter((tag) =>
+      shouldInclude(tag) || (options.dirtyOnly === true && requiredActivityTagIds.has(tag.tag_id))
+    )
+    const payload: InviteRemoteSyncPayload = {
       accountScope,
-      activityTags: data.activityTags.filter(shouldInclude).map((tag, index) => ({
+      activityTags: includedActivityTags.map((tag, index) => ({
         id: tag.tag_id,
         account_scope: accountScope,
         name: tag.tag_name,
@@ -1293,24 +1653,24 @@ class InviteStatsService {
         updated_at: this.toIsoTime(tag.updated_at),
         raw_json: tag
       })),
-      groupTagBindings: data.groupTagBindings
-        .filter(shouldInclude)
+      groupTagBindings: includedGroupTagBindings
         .map((binding) => ({
-        id: binding.id,
-        account_scope: accountScope,
-        group_id: binding.group_id,
-        group_name: binding.group_name,
-        activity_tag_id: binding.tag_id,
-        enabled: binding.enabled,
-        last_scan_at: this.toIsoTime(binding.last_scan_time),
-        last_invite_time: this.toIsoTime(binding.last_invite_time),
-        sync_status: binding.sync_status || '',
-        sync_error: binding.sync_error || '',
-        last_sync_at: this.toIsoTime(binding.last_sync_at),
-        created_at: this.toIsoTime(binding.created_at),
-        updated_at: this.toIsoTime(binding.updated_at),
-        raw_json: binding
-      })),
+          id: binding.id,
+          account_scope: accountScope,
+          group_id: binding.group_id,
+          group_name: binding.group_name,
+          activity_tag_id: binding.tag_id || null,
+          enabled: binding.enabled,
+          member_count: this.normalizeMemberCount(binding.member_count),
+          last_scan_at: this.toIsoTime(binding.last_scan_time),
+          last_invite_time: this.toIsoTime(binding.last_invite_time),
+          sync_status: binding.sync_status || '',
+          sync_error: binding.sync_error || '',
+          last_sync_at: this.toIsoTime(binding.last_sync_at),
+          created_at: this.toIsoTime(binding.created_at),
+          updated_at: this.toIsoTime(binding.updated_at),
+          raw_json: binding
+        })),
       rawEvents: data.rawEvents.filter(shouldInclude).map((event) => ({
         id: event.id,
         account_scope: accountScope,
@@ -1442,26 +1802,77 @@ class InviteStatsService {
         raw_json: log
       }))
     }
+
+    const snapshot: InviteSyncSnapshot = {
+      activityTags: new Map<string, number>(),
+      groupTagBindings: new Map<string, number>(),
+      rawEvents: new Map<string, number>(),
+      inviteEvents: new Map<string, number>(),
+      quitEvents: new Map<string, number>(),
+      memberIdentityBindings: new Map<string, number>(),
+      scanLogs: new Map<string, number>()
+    }
+
+    for (const tag of includedActivityTags) {
+      snapshot.activityTags.set(tag.tag_id, Number(tag.updated_at || 0))
+    }
+    for (const binding of includedGroupTagBindings) {
+      snapshot.groupTagBindings.set(binding.id, Number(binding.updated_at || 0))
+    }
+    for (const event of data.rawEvents) {
+      if (!shouldInclude(event)) continue
+      snapshot.rawEvents.set(event.id, Number(event.updated_at || 0))
+    }
+    for (const event of data.inviteEvents) {
+      if (!shouldInclude(event)) continue
+      snapshot.inviteEvents.set(event.id, Number(event.updated_at || 0))
+    }
+    for (const event of data.quitEvents) {
+      if (!shouldInclude(event)) continue
+      snapshot.quitEvents.set(event.id, Number(event.updated_at || 0))
+    }
+    for (const binding of data.memberIdentityBindings) {
+      if (!shouldInclude(binding)) continue
+      snapshot.memberIdentityBindings.set(binding.id, Number(binding.updated_at || 0))
+    }
+    for (const log of data.scanLogs) {
+      if (!shouldInclude(log)) continue
+      snapshot.scanLogs.set(log.id, Number((log as InviteScanLog & { updated_at?: number }).updated_at || log.finished_at || log.started_at || 0))
+    }
+
+    return { payload, snapshot }
   }
 
-  markCurrentScopeSyncResult(success: boolean, errorMessage = ''): void {
+  markCurrentScopeSyncResult(success: boolean, errorMessage = '', snapshot?: InviteSyncSnapshot): void {
     const data = this.getScope()
     const now = this.nowSeconds()
-    const rows: Array<Record<string, any>> = [
-      ...data.activityTags,
-      ...data.groupTagBindings,
-      ...data.rawEvents,
-      ...data.inviteEvents,
-      ...data.quitEvents,
-      ...data.memberIdentityBindings,
-      ...data.scanLogs
-    ]
-    for (const row of rows) {
-      if (!this.isSyncDirty(row)) continue
-      row.sync_status = success ? 'synced' : 'failed'
-      row.sync_error = success ? '' : errorMessage
-      row.last_sync_at = now
+    const markRows = <T extends { sync_status?: string; sync_error?: string; last_sync_at?: number; updated_at?: number; finished_at?: number; started_at?: number }>(
+      rows: T[],
+      bucket: keyof InviteSyncSnapshot,
+      getRowId: (row: T) => string,
+      getRowUpdatedAt: (row: T) => number
+    ) => {
+      for (const row of rows) {
+        if (snapshot) {
+          const snapshotUpdatedAt = snapshot[bucket].get(getRowId(row))
+          if (snapshotUpdatedAt === undefined) continue
+          if (snapshotUpdatedAt !== getRowUpdatedAt(row)) continue
+        } else if (!this.isSyncDirty(row)) {
+          continue
+        }
+        row.sync_status = success ? 'synced' : 'failed'
+        row.sync_error = success ? '' : errorMessage
+        row.last_sync_at = now
+      }
     }
+
+    markRows(data.activityTags, 'activityTags', (row) => row.tag_id, (row) => row.updated_at)
+    markRows(data.groupTagBindings, 'groupTagBindings', (row) => row.id, (row) => row.updated_at)
+    markRows(data.rawEvents, 'rawEvents', (row) => row.id, (row) => row.updated_at)
+    markRows(data.inviteEvents, 'inviteEvents', (row) => row.id, (row) => row.updated_at)
+    markRows(data.quitEvents, 'quitEvents', (row) => row.id, (row) => row.updated_at)
+    markRows(data.memberIdentityBindings, 'memberIdentityBindings', (row) => row.id, (row) => row.updated_at)
+    markRows(data.scanLogs, 'scanLogs', (row) => row.id, (row) => Number((row as InviteScanLog & { updated_at?: number }).updated_at || row.finished_at || row.started_at || 0))
     this.persist()
   }
 
@@ -1565,12 +1976,14 @@ class InviteStatsService {
           group_id: raw.group_id,
           activity_tag_id: tag.tag_id,
           activity_tag_name: tag.tag_name,
-          head_img: '',
+          head_img: raw.head_img || '',
           join_type: raw.join_type || 'unknown',
           delete_flag: raw.delete_flag,
           valid_flag: raw.valid_flag,
           raw_content: raw.raw_content,
           parsed_content: raw.parsed_content,
+          source_rule: raw.source_rule || '',
+          source_context_members: raw.source_context_members || [],
           source_message_id: raw.source_message_id,
           source_local_id: raw.source_local_id,
           source_create_time: raw.source_create_time,
@@ -1595,12 +2008,14 @@ class InviteStatsService {
           group_id: raw.group_id,
           activity_tag_id: tag.tag_id,
           activity_tag_name: tag.tag_name,
-          head_img: '',
+          head_img: raw.head_img || '',
           quit_type: raw.quit_type || 'unknown',
           operator: raw.related_name,
           operator_wx_id: raw.related_wxid,
           raw_content: raw.raw_content,
           parsed_content: raw.parsed_content,
+          source_rule: raw.source_rule || '',
+          source_context_members: raw.source_context_members || [],
           source_message_id: raw.source_message_id,
           source_local_id: raw.source_local_id,
           source_create_time: raw.source_create_time,
@@ -1650,7 +2065,6 @@ class InviteStatsService {
   ): InviteStatsGroupRow[] {
     const bindingByGroupId = new Map(data.groupTagBindings.map((binding) => [binding.group_id, binding]))
     const tagById = new Map(data.activityTags.map((tag) => [tag.tag_id, tag]))
-    const activeMembersByGroupId = new Map<string, Set<string>>()
     const todayJoinByGroupId = new Map<string, Set<string>>()
     const todayQuitByGroupId = new Map<string, Set<string>>()
     const addMember = (map: Map<string, Set<string>>, groupId: string, memberKey: string) => {
@@ -1663,9 +2077,12 @@ class InviteStatsService {
     for (const event of data.inviteEvents) {
       if (event.status !== 'confirmed') continue
       const memberKey = this.getMemberKey(event)
-      if (event.delete_flag !== 1) addMember(activeMembersByGroupId, event.group_id, memberKey)
       if (event.invite_time >= todayStart && event.invite_time <= todayEnd) {
         addMember(todayJoinByGroupId, event.group_id, memberKey)
+      }
+      const traceTime = this.getInviteEventTimelineTime(event)
+      if (event.delete_flag === 1 && traceTime >= todayStart && traceTime <= todayEnd) {
+        addMember(todayQuitByGroupId, event.group_id, memberKey)
       }
     }
     for (const event of data.quitEvents) {
@@ -1680,7 +2097,7 @@ class InviteStatsService {
         group_id: group.username,
         group_name: group.displayName || group.username,
         avatar_url: group.avatarUrl,
-        member_count: activeMembersByGroupId.get(group.username)?.size || 0,
+        member_count: this.normalizeMemberCount(group.memberCount),
         today_join_count: todayJoinByGroupId.get(group.username)?.size || 0,
         today_quit_count: todayQuitByGroupId.get(group.username)?.size || 0,
         recent_invite_time: binding?.last_invite_time || 0,
@@ -1701,7 +2118,9 @@ class InviteStatsService {
         return { success: false, error: groupsResult.error || '获取微信群失败' }
       }
       const todayStart = this.startOfTodaySeconds()
+      const changed = this.refreshBindingMemberCounts(data, groupsResult.data)
       const rows = this.buildGroupRows(data, groupsResult.data, todayStart, this.nowSeconds())
+      if (changed) this.persist()
       return { success: true, data: rows }
     } catch (error) {
       return { success: false, error: String(error) }
@@ -1719,15 +2138,19 @@ class InviteStatsService {
       if (!tag) return { success: false, error: '活动标签不存在' }
 
       const groupsMap = await this.getGroupsMap()
-      const groupName = groupsMap.get(normalizedGroupId)?.displayName || normalizedGroupId
+      const groupInfo = groupsMap.get(normalizedGroupId)
+      const groupName = groupInfo?.displayName || normalizedGroupId
+      const memberCount = this.normalizeMemberCount(groupInfo?.memberCount)
       const now = this.nowSeconds()
       const existing = data.groupTagBindings.find((item) => item.group_id === normalizedGroupId)
       if (existing) {
         const previousTagId = existing.tag_id
         existing.group_name = groupName
+        existing.avatar_url = groupInfo?.avatarUrl || existing.avatar_url || ''
         existing.tag_id = tag.tag_id
         existing.tag_name = tag.tag_name
         existing.enabled = true
+        existing.member_count = memberCount
         this.markSyncDirty(existing, now)
         if (previousTagId !== tag.tag_id) {
           this.retagGroupMaterializedEvents(data, normalizedGroupId, tag, groupName)
@@ -1738,9 +2161,11 @@ class InviteStatsService {
           id: randomUUID(),
           group_id: normalizedGroupId,
           group_name: groupName,
+          avatar_url: groupInfo?.avatarUrl || '',
           tag_id: tag.tag_id,
           tag_name: tag.tag_name,
           enabled: true,
+          member_count: memberCount,
           last_scan_time: 0,
           last_invite_time: 0,
           last_message_id: '',
@@ -1885,10 +2310,100 @@ class InviteStatsService {
     }
   }
 
+  private async checkQuitGroupsInternal(tagId: string): Promise<{ success: boolean; log?: InviteScanLog; error?: string }> {
+    const data = this.getScope()
+    const tag = data.activityTags.find((item) => item.tag_id === tagId && item.enabled)
+    if (!tag) return { success: false, error: '活动标签不存在或未启用' }
+    const bindings = this.getEnabledBindingsForTag(data, tagId)
+    if (bindings.length === 0) return { success: false, error: '当前活动标签没有绑定微信群' }
+
+    const startedAt = this.nowSeconds()
+    const log: InviteScanLog = {
+      id: randomUUID(),
+      tag_id: tag.tag_id,
+      tag_name: tag.tag_name,
+      scan_mode: 'quit-check',
+      status: 'running',
+      started_at: startedAt,
+      finished_at: 0,
+      scanned_groups: bindings.length,
+      scanned_messages: 0,
+      new_invites: 0,
+      new_quits: 0,
+      pending_count: 0,
+      error: '',
+      sync_status: 'dirty',
+      sync_error: '',
+      last_sync_at: 0
+    }
+    data.scanLogs.unshift(log)
+    data.scanLogs = data.scanLogs.slice(0, this.maxScanLogsPerScope)
+    this.activeScanState = {
+      tagId: tag.tag_id,
+      tagName: tag.tag_name,
+      scanMode: 'quit-check',
+      startedAt,
+      groupCount: bindings.length,
+      scannedMessageCount: 0
+    }
+    this.persist()
+
+    try {
+      for (const binding of bindings) {
+        const membersResult = await groupAnalyticsService.getGroupMembers(binding.group_id)
+        if (!membersResult.success || !Array.isArray(membersResult.data) || membersResult.data.length === 0) continue
+
+        const currentMemberKeys = new Set<string>()
+        for (const member of membersResult.data) {
+          for (const key of this.getGroupMemberIdentityKeys(member)) currentMemberKeys.add(key)
+        }
+        if (currentMemberKeys.size === 0) continue
+
+        const now = this.nowSeconds()
+        const groupInviteEvents = data.inviteEvents.filter((event) =>
+          event.activity_tag_id === tagId &&
+          event.group_id === binding.group_id &&
+          event.status === 'confirmed'
+        )
+        for (const event of groupInviteEvents) {
+          const memberKey = this.getMemberKey(event)
+          if (!memberKey || currentMemberKeys.has(memberKey) || event.delete_flag === 1) continue
+          event.delete_flag = 1
+          this.markSyncDirty(event, now)
+          log.new_quits += 1
+        }
+
+        binding.last_scan_time = now
+        this.markSyncDirty(binding, now)
+      }
+
+      this.recomputeFlags(data)
+      log.status = 'completed'
+      log.finished_at = this.nowSeconds()
+      this.markSyncDirty(log, log.finished_at)
+      this.persist()
+      this.notifyAfterScanSuccess()
+      return { success: true, log }
+    } catch (error) {
+      log.status = 'failed'
+      log.finished_at = this.nowSeconds()
+      log.error = String(error)
+      this.markSyncDirty(log, log.finished_at)
+      this.persist()
+      return { success: false, log, error: String(error) }
+    } finally {
+      this.activeScanState = null
+    }
+  }
+
   async scanActivity(tagId: string): Promise<{ success: boolean; started?: boolean; running?: boolean; log?: InviteScanLog; error?: string }> {
     if (this.scanPromise) return { success: true, running: true, error: '已有扫描任务正在运行' }
     const data = this.getScope()
     const normalizedTagId = normalizeText(tagId)
+    if (this.isAllActivityScope(normalizedTagId)) {
+      void this.runBackgroundScan()
+      return { success: true, started: true }
+    }
     const tag = data.activityTags.find((item) => item.tag_id === normalizedTagId && item.enabled)
     if (!tag) return { success: false, error: '活动标签不存在或未启用' }
     if (this.getEnabledBindingsForTag(data, normalizedTagId).length === 0) {
@@ -1903,7 +2418,30 @@ class InviteStatsService {
     return { success: true, started: true }
   }
 
+  async checkQuitGroups(tagId: string): Promise<{ success: boolean; started?: boolean; running?: boolean; log?: InviteScanLog; error?: string }> {
+    if (this.scanPromise) return { success: true, running: true, error: '已有扫描任务正在运行' }
+    const data = this.getScope()
+    const normalizedTagId = normalizeText(tagId)
+    if (this.isAllActivityScope(normalizedTagId)) {
+      void this.runBackgroundQuitCheck()
+      return { success: true, started: true }
+    }
+    const tag = data.activityTags.find((item) => item.tag_id === normalizedTagId && item.enabled)
+    if (!tag) return { success: false, error: '活动标签不存在或未启用' }
+    if (this.getEnabledBindingsForTag(data, normalizedTagId).length === 0) {
+      return { success: false, error: '当前活动标签没有绑定微信群' }
+    }
+    this.scanPromise = this.checkQuitGroupsInternal(normalizedTagId).catch((error) => ({
+      success: false,
+      error: error instanceof Error ? error.message : String(error)
+    })).finally(() => {
+      this.scanPromise = null
+    })
+    return { success: true, started: true }
+  }
+
   async getScanStatus(): Promise<{ success: boolean; data?: { running: boolean; active?: any; logs: InviteScanLog[] }; error?: string }> {
+
     try {
       const data = this.getScope()
       return {
@@ -1948,6 +2486,31 @@ class InviteStatsService {
     await this.scanPromise
   }
 
+  async runBackgroundQuitCheck(): Promise<void> {
+    if (this.scanPromise) return
+    const data = this.getScope()
+    const tagIds = data.activityTags
+      .filter((tag) => tag.enabled && this.getEnabledBindingsForTag(data, tag.tag_id).length > 0)
+      .map((tag) => tag.tag_id)
+    if (tagIds.length === 0) return
+    this.scanPromise = (async () => {
+      for (const tagId of tagIds) {
+        await this.checkQuitGroupsInternal(tagId).catch(() => undefined)
+      }
+    })().finally(() => {
+      this.scanPromise = null
+    })
+    await this.scanPromise
+  }
+
+  private getNextBeijingMidnightDelayMs(nowMs = Date.now()): number {
+    const dayMs = 24 * 60 * 60 * 1000
+    const beijingOffsetMs = 8 * 60 * 60 * 1000
+    const beijingNowMs = nowMs + beijingOffsetMs
+    const nextBeijingMidnightMs = Math.floor(beijingNowMs / dayMs) * dayMs + dayMs
+    return Math.max(1_000, nextBeijingMidnightMs - beijingNowMs)
+  }
+
   startAutoScanScheduler(): void {
     if (this.autoScanStarted) return
     this.autoScanStarted = true
@@ -1967,6 +2530,29 @@ class InviteStatsService {
     this.autoScanStarted = false
   }
 
+  startAutoQuitCheckScheduler(): void {
+    if (this.autoQuitCheckStarted) return
+    this.autoQuitCheckStarted = true
+    let firstRun = true
+    const scheduleNext = () => {
+      const timer = setTimeout(async () => {
+        this.autoQuitCheckTimer = null
+        await this.runBackgroundQuitCheck()
+        firstRun = false
+        if (this.autoQuitCheckStarted) scheduleNext()
+      }, firstRun ? 60 * 1000 : 30 * 60 * 1000)
+      if (typeof timer.unref === 'function') timer.unref()
+      this.autoQuitCheckTimer = timer
+    }
+    scheduleNext()
+  }
+
+  stopAutoQuitCheckScheduler(): void {
+    if (this.autoQuitCheckTimer) clearTimeout(this.autoQuitCheckTimer)
+    this.autoQuitCheckTimer = null
+    this.autoQuitCheckStarted = false
+  }
+
   async getDashboard(input: {
     tagId: string
     startTime?: number
@@ -1974,19 +2560,23 @@ class InviteStatsService {
     includeQuitMembers?: boolean
     minInviteCount?: number
     rankingGroupId?: string
+    dedupeMembers?: boolean
   }): Promise<{ success: boolean; data?: any; error?: string }> {
     try {
       const data = this.getScope()
-      this.recomputeFlags(data)
-      const tagId = normalizeText(input.tagId)
-      const tag = data.activityTags.find((item) => item.tag_id === tagId)
-      if (!tag) return { success: false, error: '活动标签不存在' }
-      const bindings = this.getEnabledBindingsForTag(data, tagId)
+      let changed = this.recomputeFlags(data)
+      const tagId = normalizeText(input.tagId) || ALL_ACTIVITY_TAG_ID
+      const dedupeMembers = input.dedupeMembers !== false
+      const tag = this.isAllActivityScope(tagId)
+        ? undefined
+        : data.activityTags.find((item) => item.tag_id === tagId)
+      if (!this.isAllActivityScope(tagId) && !tag) return { success: false, error: '活动标签不存在' }
+      const bindings = this.getScopedBindings(data, tagId)
       const bindingGroupIds = new Set(bindings.map((binding) => binding.group_id))
       const now = this.nowSeconds()
       const todayStart = this.startOfTodaySeconds()
       const todayEnd = now
-      const effective = this.getEffectiveInviteEvents(data, tagId)
+      const inviteEventsForDashboard = this.getDashboardInviteEvents(data, tagId, dedupeMembers)
       const scopedInviteEvents = this.getScopedInviteEvents(data, tagId)
       const scopedQuitEvents = this.getScopedQuitEvents(data, tagId)
       const pendingCount = scopedInviteEvents.filter((event) => event.status === 'pending').length +
@@ -1994,32 +2584,49 @@ class InviteStatsService {
 
       const groupsResult = await groupAnalyticsService.getGroupChats()
       const groupRows = groupsResult.success && groupsResult.data
-        ? this.buildGroupRows(data, groupsResult.data, todayStart, todayEnd).filter((row) => bindingGroupIds.has(row.group_id))
+        ? (() => {
+            changed = this.refreshBindingMemberCounts(data, groupsResult.data) || changed
+            return this.buildGroupRows(data, groupsResult.data, todayStart, todayEnd).filter((row) => bindingGroupIds.has(row.group_id))
+          })()
         : []
-      const activeMemberCount = new Set(effective
-        .filter((event) => event.delete_flag !== 1)
-        .map((event) => this.getMemberKey(event))
-        .filter(Boolean)
-      ).size
+
+      const activeMemberCount = dedupeMembers
+        ? new Set(inviteEventsForDashboard
+            .filter((event) => event.status === 'confirmed' && event.delete_flag !== 1)
+            .map((event) => this.getMemberKey(event))
+            .filter(Boolean)
+          ).size
+        : inviteEventsForDashboard.filter((event) => event.delete_flag !== 1).length
       const totalMembers = input.includeQuitMembers
-        ? new Set(scopedInviteEvents.filter((event) => event.status === 'confirmed').map((event) => this.getMemberKey(event)).filter(Boolean)).size
+        ? (dedupeMembers
+            ? new Set(inviteEventsForDashboard
+                .filter((event) => event.status === 'confirmed')
+                .map((event) => this.getMemberKey(event))
+                .filter(Boolean)
+              ).size
+            : inviteEventsForDashboard.length)
         : activeMemberCount
 
-      const todayNew = this.filterByTime(effective, todayStart, todayEnd)
-      const todayNewCount = new Set(todayNew.map((event) => this.getMemberKey(event)).filter(Boolean)).size
-      const todayQuit = scopedQuitEvents.filter((event) =>
-        event.status === 'confirmed' &&
-        event.quit_time >= todayStart &&
-        event.quit_time <= todayEnd
-      )
-      const todayQuitCount = new Set(todayQuit.map((event) => {
-        return this.getMemberKey(event) || `${event.group_id}:${event.user}:${event.quit_time}`
-      })).size
+      const todayInviteEvents = this.filterByTime(inviteEventsForDashboard, todayStart, todayEnd)
+      const todayNewCount = dedupeMembers
+        ? new Set(todayInviteEvents.map((event) => this.getMemberKey(event)).filter(Boolean)).size
+        : todayInviteEvents.length
+      const todayQuitMembers = new Set<string>()
+      for (const event of scopedQuitEvents) {
+        if (event.status !== 'confirmed' || event.quit_time < todayStart || event.quit_time > todayEnd) continue
+        todayQuitMembers.add(this.getMemberKey(event) || (event.group_id + ':' + event.user + ':' + event.quit_time))
+      }
+      for (const event of scopedInviteEvents) {
+        const traceTime = this.getInviteEventTimelineTime(event)
+        if (event.status !== 'confirmed' || event.delete_flag !== 1 || traceTime < todayStart || traceTime > todayEnd) continue
+        todayQuitMembers.add(this.getMemberKey(event) || (event.group_id + ':' + event.user + ':' + traceTime))
+      }
+      const todayQuitCount = todayQuitMembers.size
       const activeBotCount = normalizeText(this.configService.getMyWxidCleaned()) ? 1 : 0
 
       const hourlyBuckets: Record<number, number> = {}
       for (let hour = 0; hour < 24; hour += 1) hourlyBuckets[hour] = 0
-      for (const event of effective) {
+      for (const event of inviteEventsForDashboard) {
         const hour = this.getBeijingHour(event.invite_time)
         hourlyBuckets[hour] = (hourlyBuckets[hour] || 0) + 1
       }
@@ -2041,7 +2648,8 @@ class InviteStatsService {
       const recentActivities = this.buildMemberTraceRows(data, {
         tagId,
         includeQuit: true
-      }).slice(0, 20)
+      }).filter((row) => row.status !== 'ignored').slice(0, 20)
+      if (changed) this.persist()
 
       return {
         success: true,
@@ -2056,7 +2664,7 @@ class InviteStatsService {
             pendingCount
           },
           hourlyDistribution,
-          inviteRanking: this.buildInviteRanking(data, tagId, input.startTime, input.endTime, Math.max(0, Number(input.minInviteCount || 0)), input.rankingGroupId),
+          inviteRanking: this.buildInviteRanking(data, tagId, input.startTime, input.endTime, Math.max(0, Number(input.minInviteCount || 0)), input.rankingGroupId, dedupeMembers),
           groupRanking,
           recentActivities,
           scanStatus: {
@@ -2072,6 +2680,7 @@ class InviteStatsService {
   }
 
   private buildMemberTraceRows(data: InviteStatsScopeData, filters: MemberTraceFilters): MemberTraceRow[] {
+
     const tagId = normalizeText(filters.tagId)
     const groupId = normalizeText(filters.groupId)
     const keyword = normalizeText(filters.keyword).toLowerCase()
@@ -2079,6 +2688,11 @@ class InviteStatsService {
     const statusFilter = normalizeText(filters.statusFilter)
     const attributionFilter = normalizeText(filters.attributionFilter)
     const invitedCountMap = tagId ? this.getInvitedCountByInviter(data, tagId) : new Map<string, number>()
+    const groupNameById = new Map(
+      data.groupTagBindings
+        .filter((binding) => binding.enabled)
+        .map((binding) => [binding.group_id, binding.group_name || binding.group_id] as const)
+    )
     const rows: MemberTraceRow[] = []
 
     for (const event of data.inviteEvents) {
@@ -2089,7 +2703,7 @@ class InviteStatsService {
         wx_id: event.wx_id,
         inviter: event.inviter,
         inviter_wx_id: event.inviter_wx_id,
-        group_name: event.group_name,
+        group_name: groupNameById.get(event.group_id) || event.group_name || event.group_id,
         group_id: event.group_id,
         activity_tag_id: event.activity_tag_id,
         activity_tag_name: event.activity_tag_name,
@@ -2098,13 +2712,15 @@ class InviteStatsService {
         quit_type: '',
         operator: '',
         operator_wx_id: '',
-        event_time: event.invite_time,
+        event_time: this.getInviteEventTimelineTime(event),
         delete_flag: event.delete_flag,
         valid_flag: event.valid_flag,
         status: event.status,
         invited_count: invitedCountMap.get(this.cleanAccountDirName(event.wx_id)) || invitedCountMap.get(normalizeIdentityText(event.user)) || 0,
         raw_content: event.raw_content,
-        parsed_content: event.parsed_content
+        parsed_content: event.parsed_content,
+        source_rule: event.source_rule || '',
+        source_context_members: event.source_context_members || []
       })
     }
 
@@ -2117,7 +2733,7 @@ class InviteStatsService {
           wx_id: event.wx_id,
           inviter: '',
           inviter_wx_id: '',
-          group_name: event.group_name,
+          group_name: groupNameById.get(event.group_id) || event.group_name || event.group_id,
           group_id: event.group_id,
           activity_tag_id: event.activity_tag_id,
           activity_tag_name: event.activity_tag_name,
@@ -2132,7 +2748,9 @@ class InviteStatsService {
           status: event.status,
           invited_count: 0,
           raw_content: event.raw_content,
-          parsed_content: event.parsed_content
+          parsed_content: event.parsed_content,
+          source_rule: event.source_rule || '',
+          source_context_members: event.source_context_members || []
         })
       }
     }
@@ -2144,11 +2762,17 @@ class InviteStatsService {
         if (wxId && this.cleanAccountDirName(row.wx_id) !== wxId) return false
         if (filters.startTime && row.event_time < filters.startTime) return false
         if (filters.endTime && row.event_time > filters.endTime) return false
-        if (statusFilter === 'active' && (row.event_type !== 'invite' || row.status !== 'confirmed' || row.delete_flag === 1)) return false
-        if (statusFilter === 'quit' && row.delete_flag !== 1 && row.event_type !== 'quit') return false
+        const rowIsQuit = row.status !== 'ignored' && (row.delete_flag === 1 || row.event_type === 'quit')
+        const rowIsActive = row.status !== 'pending' && !rowIsQuit
+        if (statusFilter === 'active' && !rowIsActive) return false
+        if (statusFilter === 'quit' && !rowIsQuit) return false
         if (statusFilter === 'pending' && row.status !== 'pending') return false
-        if (attributionFilter === 'valid' && row.valid_flag !== 1) return false
-        if (attributionFilter === 'invalid' && row.valid_flag !== -1) return false
+        if (attributionFilter === 'valid' && (row.event_type !== 'invite' || row.status !== 'confirmed' || row.valid_flag !== 1)) return false
+        if (attributionFilter === 'invalid') {
+          const isIgnored = row.status === 'ignored'
+          const isInvalidInvite = row.event_type === 'invite' && row.status === 'confirmed' && row.valid_flag === -1
+          if (!isIgnored && !isInvalidInvite) return false
+        }
         if (attributionFilter === 'pending' && row.status !== 'pending') return false
         if (keyword) {
           const fields = [row.user, row.wx_id, row.inviter, row.inviter_wx_id, row.group_name, row.group_id]
@@ -2170,6 +2794,9 @@ class InviteStatsService {
   async getMemberTrace(filters: MemberTraceFilters): Promise<{ success: boolean; data?: { rows: MemberTraceRow[]; total: number }; error?: string }> {
     try {
       const data = this.getScope()
+      let changed = this.recomputeFlags(data)
+      changed = await this.refreshBindingMemberCountsFromSource(data) || changed
+      if (changed) this.persist()
       const offset = Math.max(0, Number(filters.offset || 0))
       const limit = Math.min(500, Math.max(1, Number(filters.limit || 100)))
       const rows = this.buildMemberTraceRows(data, filters)
@@ -2182,6 +2809,9 @@ class InviteStatsService {
   async listPending(filters: { tagId?: string } = {}): Promise<{ success: boolean; data?: MemberTraceRow[]; error?: string }> {
     try {
       const data = this.getScope()
+      let changed = this.recomputeFlags(data)
+      changed = await this.refreshBindingMemberCountsFromSource(data) || changed
+      if (changed) this.persist()
       const rows = this.buildMemberTraceRows(data, {
         tagId: filters.tagId,
         includeQuit: true,
@@ -2196,6 +2826,7 @@ class InviteStatsService {
   async confirmPending(payload: {
     eventType: 'invite' | 'quit'
     eventId: string
+    groupId?: string
     wxId?: string
     inviterWxId?: string
     operatorWxId?: string
@@ -2206,34 +2837,199 @@ class InviteStatsService {
       if (payload.eventType === 'invite') {
         const event = data.inviteEvents.find((item) => item.id === payload.eventId)
         if (!event) return { success: false, error: '未找到待确认记录' }
-        if (payload.wxId) {
-          event.wx_id = normalizeText(payload.wxId)
-          this.ensureIdentityBinding(data, event.group_id, event.user, event.wx_id, 'manual')
+        const previousDedupKey = event.dedup_key || this.buildRawDedupKey('invite', event)
+        const nextGroupId = normalizeText(payload.groupId || event.group_id)
+        const binding = this.getBoundGroupBinding(data, nextGroupId, event.activity_tag_id)
+        if (!binding) return { success: false, error: '群 ID 必须存在，并且属于当前活动标签' }
+
+        const nextWxId = normalizeText(payload.wxId || event.wx_id)
+        if (!nextWxId) return { success: false, error: '有效邀请必须补充被邀请人微信 ID' }
+
+        const nextInviterWxId = normalizeText(payload.inviterWxId || event.inviter_wx_id)
+        const hasKnownInviter = this.isKnownRelatedName(event.inviter)
+        if (hasKnownInviter && !nextInviterWxId) {
+          return { success: false, error: '有效邀请必须补充邀请人微信 ID' }
         }
-        if (payload.inviterWxId) {
-          event.inviter_wx_id = normalizeText(payload.inviterWxId)
+
+        const duplicateKey = this.buildMessageDedupKey({
+          ...event,
+          group_id: nextGroupId,
+          wx_id: nextWxId
+        })
+        const duplicateEvents = data.inviteEvents.filter((item) =>
+          item.id !== event.id && this.buildMessageDedupKey(item) === duplicateKey
+        )
+
+        const members = await this.loadGroupMembers(nextGroupId)
+        const userIdentity = await this.resolveManualIdentity(nextGroupId, nextWxId, event.user, members)
+        const inviterIdentity = hasKnownInviter
+          ? await this.resolveManualIdentity(nextGroupId, nextInviterWxId, event.inviter, members)
+          : null
+
+        event.group_id = nextGroupId
+        event.group_name = binding.group_name || event.group_name || nextGroupId
+        event.wx_id = userIdentity.wxId
+        event.user = userIdentity.displayName || event.user
+        event.head_img = userIdentity.avatarUrl || event.head_img
+        if (inviterIdentity) {
+          event.inviter_wx_id = inviterIdentity.wxId
+          event.inviter = inviterIdentity.displayName || event.inviter
+        }
+        event.status = 'confirmed'
+        event.confidence = Math.max(Number(event.confidence || 0), 0.99)
+        event.dedup_key = this.buildRawDedupKey('invite', event)
+        if (previousDedupKey !== event.dedup_key) {
+          data.rawEvents = data.rawEvents.filter((raw) => raw.dedup_key !== previousDedupKey || raw.id !== event.id)
+        }
+        if (duplicateEvents.length > 0) {
+          const duplicateIds = new Set(duplicateEvents.map((item) => item.id))
+          data.inviteEvents = data.inviteEvents.filter((item) => item.id === event.id || !duplicateIds.has(item.id))
+          data.rawEvents = data.rawEvents.filter((raw) => !duplicateIds.has(raw.id))
+        }
+        this.ensureIdentityBinding(data, event.group_id, event.user, event.wx_id, 'manual')
+        this.ensureMemberAliasBindings(data, event.group_id, userIdentity.member, 'manual')
+        if (inviterIdentity) {
           this.ensureIdentityBinding(data, event.group_id, event.inviter, event.inviter_wx_id, 'manual')
+          this.ensureMemberAliasBindings(data, event.group_id, inviterIdentity.member, 'manual')
         }
-        event.status = event.wx_id ? 'confirmed' : 'pending'
         this.markSyncDirty(event, now)
       } else {
         const event = data.quitEvents.find((item) => item.id === payload.eventId)
         if (!event) return { success: false, error: '未找到待确认记录' }
-        if (payload.wxId) {
-          event.wx_id = normalizeText(payload.wxId)
+        const previousDedupKey = event.dedup_key || this.buildRawDedupKey('quit', event)
+        const nextGroupId = normalizeText(payload.groupId || event.group_id)
+        const binding = this.getBoundGroupBinding(data, nextGroupId, event.activity_tag_id)
+        if (!binding) return { success: false, error: '群 ID 必须存在，并且属于当前活动标签' }
+        const members = await this.loadGroupMembers(nextGroupId)
+
+        event.group_id = nextGroupId
+        event.group_name = binding.group_name || event.group_name || nextGroupId
+        const nextWxId = normalizeText(payload.wxId || event.wx_id)
+        if (nextWxId) {
+          const userIdentity = await this.resolveManualIdentity(nextGroupId, nextWxId, event.user, members)
+          event.wx_id = userIdentity.wxId
+          event.user = userIdentity.displayName || event.user
+          event.head_img = userIdentity.avatarUrl || event.head_img
           this.ensureIdentityBinding(data, event.group_id, event.user, event.wx_id, 'manual')
+          this.ensureMemberAliasBindings(data, event.group_id, userIdentity.member, 'manual')
         }
         if (payload.operatorWxId) {
-          event.operator_wx_id = normalizeText(payload.operatorWxId)
+          const operatorIdentity = await this.resolveManualIdentity(nextGroupId, payload.operatorWxId, event.operator, members)
+          event.operator_wx_id = operatorIdentity.wxId
+          event.operator = operatorIdentity.displayName || event.operator
           this.ensureIdentityBinding(data, event.group_id, event.operator, event.operator_wx_id, 'manual')
+          this.ensureMemberAliasBindings(data, event.group_id, operatorIdentity.member, 'manual')
         }
-        event.status = event.wx_id ? 'confirmed' : 'pending'
+        event.status = 'confirmed'
+        event.confidence = Math.max(Number(event.confidence || 0), 0.99)
+        event.dedup_key = this.buildRawDedupKey('quit', event)
+        if (previousDedupKey !== event.dedup_key) {
+          data.rawEvents = data.rawEvents.filter((raw) => raw.dedup_key !== previousDedupKey || raw.id !== event.id)
+        }
         this.markSyncDirty(event, now)
         if (event.status === 'confirmed') this.applyQuitEventToInviteFlags(data, event)
       }
       this.recomputeFlags(data)
       this.persist()
       return { success: true }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  }
+
+  async addManualInviteRecord(payload: ManualInviteRecordPayload): Promise<{ success: boolean; data?: MemberTraceRow; error?: string }> {
+
+    try {
+      const data = this.getScope()
+      const tagId = normalizeText(payload.tagId)
+      const groupId = normalizeText(payload.groupId)
+      const userName = normalizeText(payload.user)
+      const wxId = normalizeText(payload.wxId)
+      const inviterName = normalizeText(payload.inviter)
+      const inviterWxId = normalizeText(payload.inviterWxId)
+      if (!tagId) return { success: false, error: '活动标签不能为空' }
+      if (!groupId) return { success: false, error: '群 ID 不能为空' }
+      if (!userName) return { success: false, error: '被邀请人名称不能为空' }
+      if (!wxId) return { success: false, error: '被邀请人微信 ID 不能为空' }
+      if (!inviterName) return { success: false, error: '邀请人名称不能为空' }
+      if (!inviterWxId) return { success: false, error: '邀请人微信 ID 不能为空' }
+
+      const tag = data.activityTags.find((item) => item.tag_id === tagId)
+      if (!tag) return { success: false, error: '活动标签不存在' }
+      const binding = this.getBoundGroupBinding(data, groupId, tagId)
+      if (!binding) return { success: false, error: '群 ID 必须存在，并且属于当前活动标签' }
+
+      const source = payload.sourceEventId
+        ? data.inviteEvents.find((event) => event.id === payload.sourceEventId)
+        : undefined
+      if (payload.sourceEventId && !source) return { success: false, error: '未找到来源待确认记录' }
+      if (source && source.activity_tag_id !== tagId) return { success: false, error: '来源记录不属于当前活动标签' }
+
+      const sourceCreateTime = source?.source_create_time || Number(payload.inviteTime || 0) || this.nowSeconds()
+      const duplicateKey = this.buildMessageDedupKey({
+        group_id: groupId,
+        source_message_id: source?.source_message_id || '',
+        source_local_id: source?.source_local_id || 0,
+        source_create_time: sourceCreateTime,
+        wx_id: wxId,
+        inviter_wx_id: inviterWxId,
+        user: userName,
+        inviter: inviterName,
+        raw_content: source?.raw_content || ''
+      })
+      if (data.inviteEvents.some((event) => this.buildMessageDedupKey(event) === duplicateKey)) {
+        return { success: false, error: '同一源消息、群 ID 和被邀请人微信 ID 已存在，不能重复统计' }
+      }
+
+      const members = await this.loadGroupMembers(groupId)
+      const userIdentity = await this.resolveManualIdentity(groupId, wxId, userName, members)
+      const inviterIdentity = await this.resolveManualIdentity(groupId, inviterWxId, inviterName, members)
+      const now = this.nowSeconds()
+      const event: InviteEvent = {
+        id: randomUUID(),
+        user: userIdentity.displayName || userName,
+        wx_id: userIdentity.wxId,
+        inviter: inviterIdentity.displayName || inviterName,
+        inviter_wx_id: inviterIdentity.wxId,
+        invite_time: Number(payload.inviteTime || 0) || source?.invite_time || sourceCreateTime,
+        group_name: binding.group_name || groupId,
+        group_id: groupId,
+        activity_tag_id: tag.tag_id,
+        activity_tag_name: tag.tag_name,
+        head_img: userIdentity.avatarUrl,
+        join_type: 'invite',
+        delete_flag: -1,
+        valid_flag: -1,
+        raw_content: source?.raw_content || '',
+        parsed_content: source?.parsed_content || source?.raw_content || '',
+        source_rule: source?.source_rule || 'manual-add',
+        source_context_members: source?.source_context_members || [],
+        source_message_id: source?.source_message_id || '',
+        source_local_id: source?.source_local_id || 0,
+        source_create_time: sourceCreateTime,
+        confidence: 1,
+        status: 'confirmed',
+        dedup_key: '',
+        feishu_record_id: '',
+        sync_status: 'dirty',
+        sync_error: '',
+        last_sync_at: 0,
+        created_at: now,
+        updated_at: now
+      }
+      event.dedup_key = this.buildRawDedupKey('invite', event)
+      data.inviteEvents.push(event)
+      this.ensureIdentityBinding(data, groupId, userName, event.wx_id, 'manual')
+      this.ensureIdentityBinding(data, groupId, event.user, event.wx_id, 'manual')
+      this.ensureMemberAliasBindings(data, groupId, userIdentity.member, 'manual')
+      this.ensureIdentityBinding(data, groupId, inviterName, event.inviter_wx_id, 'manual')
+      this.ensureIdentityBinding(data, groupId, event.inviter, event.inviter_wx_id, 'manual')
+      this.ensureMemberAliasBindings(data, groupId, inviterIdentity.member, 'manual')
+      this.recomputeFlags(data)
+      this.persist()
+      const row = this.buildMemberTraceRows(data, { tagId, includeQuit: true })
+        .find((item) => item.event_type === 'invite' && item.id === event.id)
+      return { success: true, data: row }
     } catch (error) {
       return { success: false, error: String(error) }
     }
@@ -2264,10 +3060,11 @@ class InviteStatsService {
     endTime?: number
     minInviteCount?: number
     groupId?: string
+    dedupeMembers?: boolean
   }): Promise<{ success: boolean; count?: number; error?: string }> {
     try {
       const data = this.getScope()
-      const rows = this.buildInviteRanking(data, payload.tagId, payload.startTime, payload.endTime, payload.minInviteCount, payload.groupId)
+      const rows = this.buildInviteRanking(data, payload.tagId, payload.startTime, payload.endTime, payload.minInviteCount, payload.groupId, payload.dedupeMembers !== false)
       const headers = ['排名', '活动标签', '邀请人', '邀请人 wxid', '邀请人数', '关联群数量', '最近邀请时间']
       const tagName = data.activityTags.find((tag) => tag.tag_id === payload.tagId)?.tag_name || ''
       const body = rows.map((row) => [
@@ -2291,6 +3088,7 @@ class InviteStatsService {
   async exportMemberTrace(payload: MemberTraceFilters & { filePath: string; format?: ExportFormat }): Promise<{ success: boolean; count?: number; error?: string }> {
     try {
       const data = this.getScope()
+      if (this.recomputeFlags(data)) this.persist()
       const rows = this.buildMemberTraceRows(data, payload)
       const headers = ['事件类型', '活动标签', '成员昵称', '成员 wxid', '邀请者', '邀请者 wxid', '所在群', '群 ID', '时间', '状态', '是否有效', '类型']
       const body = rows.map((row) => [
@@ -2303,8 +3101,8 @@ class InviteStatsService {
         row.group_name,
         row.group_id,
         this.formatTime(row.event_time),
-        row.status !== 'confirmed' ? '待确认' : (row.event_type === 'quit' || row.delete_flag === 1 ? '已退出群' : '未退出群'),
-        row.valid_flag === 1 ? '有效' : row.valid_flag === -1 ? '无效' : row.status,
+        row.status === 'pending' ? '待确认' : (row.status !== 'ignored' && (row.event_type === 'quit' || row.delete_flag === 1) ? '已退出群' : '未退出群'),
+        row.status === 'ignored' ? '无效' : row.status !== 'confirmed' ? '待确认' : row.event_type !== 'invite' ? '-' : row.valid_flag === 1 ? '有效' : row.valid_flag === -1 ? '无效' : '-',
         row.join_type || row.quit_type
       ])
       const format = this.normalizeExportFormat(payload.filePath, payload.format)

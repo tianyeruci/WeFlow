@@ -3,9 +3,114 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ActivityTag, DashboardData, MemberTraceData, MemberTraceRow } from '@/types/invite'
 
-type ViewKey = 'dashboard' | 'trace'
+type ViewKey = 'dashboard' | 'groups' | 'trace'
 type ChartMode = 'bar' | 'pie'
 const DASHBOARD_POLL_INTERVAL_MS = 10000
+const REFRESH_COOLDOWN_SECONDS = 15
+const GROUP_RANK_PAGE_SIZE = 10
+const rankingImageColors = ['#59b8ad', '#e3c763', '#e75a6c', '#ffd8b4', '#5b9bea', '#87cba2', '#f28a42', '#586aa5', '#bf7bd7']
+
+function downloadRankingImage(input: {
+  title: string
+  filename: string
+  rows: Array<{ name: string; count: number }>
+}) {
+  if (!input.rows.length) return false
+
+  const width = 1000
+  const left = 260
+  const right = 130
+  const top = 74
+  const rowHeight = 48
+  const bottom = 44
+  const chartWidth = width - left - right
+  const height = Math.max(260, top + input.rows.length * rowHeight + bottom)
+  const scale = Math.min(2, window.devicePixelRatio || 1)
+  const canvas = document.createElement('canvas')
+  canvas.width = width * scale
+  canvas.height = height * scale
+  canvas.style.width = `${width}px`
+  canvas.style.height = `${height}px`
+
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return false
+
+  ctx.scale(scale, scale)
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, width, height)
+
+  ctx.fillStyle = '#1f2937'
+  ctx.font = '700 24px "Microsoft YaHei", "PingFang SC", sans-serif'
+  ctx.fillText(input.title, 12, 32)
+
+  const maxCount = Math.max(1, ...input.rows.map(row => row.count))
+  ctx.strokeStyle = '#e6e8ed'
+  ctx.lineWidth = 1
+  for (let index = 0; index <= 4; index += 1) {
+    const x = left + (chartWidth * index) / 4
+    ctx.beginPath()
+    ctx.moveTo(x, top - 24)
+    ctx.lineTo(x, height - bottom + 4)
+    ctx.stroke()
+  }
+
+  ctx.strokeStyle = '#9aa3b2'
+  ctx.beginPath()
+  ctx.moveTo(left, top - 24)
+  ctx.lineTo(left, height - bottom + 4)
+  ctx.stroke()
+
+  input.rows.forEach((row, index) => {
+    const y = top + index * rowHeight
+    const barWidth = Math.max(8, (row.count / maxCount) * chartWidth)
+    const barY = y + 10
+    const barHeight = 18
+
+    ctx.fillStyle = '#6f7785'
+    ctx.font = '400 20px "Microsoft YaHei", "PingFang SC", sans-serif'
+    ctx.textAlign = 'right'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(ellipsizeCanvasText(ctx, row.name || '未知来源', 242), left - 14, y + 19)
+
+    ctx.fillStyle = rankingImageColors[index % rankingImageColors.length]
+    drawRoundedBar(ctx, left, barY, barWidth, barHeight, 9)
+
+    ctx.fillStyle = '#85878d'
+    ctx.font = '500 22px "Microsoft YaHei", "PingFang SC", sans-serif'
+    ctx.textAlign = 'left'
+    ctx.fillText(formatNumber(row.count), left + barWidth + 10, y + 19)
+  })
+
+  const link = document.createElement('a')
+  link.href = canvas.toDataURL('image/png')
+  link.download = input.filename
+  link.click()
+  return true
+}
+
+function drawRoundedBar(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) {
+  const safeRadius = Math.min(radius, width / 2, height / 2)
+  ctx.beginPath()
+  ctx.moveTo(x + safeRadius, y)
+  ctx.lineTo(x + width - safeRadius, y)
+  ctx.quadraticCurveTo(x + width, y, x + width, y + safeRadius)
+  ctx.lineTo(x + width, y + height - safeRadius)
+  ctx.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height)
+  ctx.lineTo(x + safeRadius, y + height)
+  ctx.quadraticCurveTo(x, y + height, x, y + height - safeRadius)
+  ctx.lineTo(x, y + safeRadius)
+  ctx.quadraticCurveTo(x, y, x + safeRadius, y)
+  ctx.fill()
+}
+
+function ellipsizeCanvasText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number) {
+  if (ctx.measureText(text).width <= maxWidth) return text
+  let next = text
+  while (next.length > 1 && ctx.measureText(`${next}...`).width > maxWidth) {
+    next = next.slice(0, -1)
+  }
+  return `${next}...`
+}
 
 const emptyDashboard: DashboardData = {
   cards: {
@@ -30,10 +135,12 @@ const emptyTrace: MemberTraceData = {
   groups: []
 }
 
+const ALL_ACTIVITY_TAG_ID = '__all__'
+
 export default function RemoteViewerPage() {
   const [view, setView] = useState<ViewKey>('dashboard')
   const [tags, setTags] = useState<ActivityTag[]>([])
-  const [selectedTagId, setSelectedTagId] = useState('')
+  const [selectedTagId, setSelectedTagId] = useState(ALL_ACTIVITY_TAG_ID)
   const [dashboard, setDashboard] = useState<DashboardData>(emptyDashboard)
   const [trace, setTrace] = useState<MemberTraceData>(emptyTrace)
   const [rankingGroupId, setRankingGroupId] = useState('')
@@ -49,13 +156,20 @@ export default function RemoteViewerPage() {
   const [traceAttribution, setTraceAttribution] = useState('')
   const [rawMessage, setRawMessage] = useState('')
   const [loading, setLoading] = useState(false)
+  const [exportingAction, setExportingAction] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [isRequestingLatestData, setIsRequestingLatestData] = useState(false)
+  const [refreshCooldownRemaining, setRefreshCooldownRemaining] = useState(0)
+  const [groupRankPage, setGroupRankPage] = useState(1)
 
   const selectedTag = useMemo(
-    () => tags.find(tag => tag.id === selectedTagId),
+    () => selectedTagId === ALL_ACTIVITY_TAG_ID ? undefined : tags.find(tag => tag.id === selectedTagId),
     [tags, selectedTagId]
   )
+  const isAllActivitySelected = selectedTagId === ALL_ACTIVITY_TAG_ID
+  const selectedScopeLabel = isAllActivitySelected ? '全部活动' : (selectedTag?.name || '当前活动')
+  const selectedScopeFileLabel = isAllActivitySelected ? '全部活动' : (selectedTag?.name || '活动')
 
   const apiGet = useCallback(async <T,>(path: string) => {
     const response = await fetch(path, {
@@ -74,7 +188,7 @@ export default function RemoteViewerPage() {
     try {
       const payload = await apiGet<{ tags: ActivityTag[] }>('/api/invite/tags')
       setTags(payload.tags)
-      setSelectedTagId(current => current || payload.tags[0]?.id || '')
+      setSelectedTagId(current => current || ALL_ACTIVITY_TAG_ID)
     } catch (err) {
       setError(errorMessage(err))
     } finally {
@@ -83,8 +197,8 @@ export default function RemoteViewerPage() {
   }, [apiGet])
 
   const loadDashboard = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
-    if (!selectedTagId) return
-    const params = new URLSearchParams({ tagId: selectedTagId })
+    const tagId = selectedTagId || ALL_ACTIVITY_TAG_ID
+    const params = new URLSearchParams({ tagId })
     if (rankingGroupId) params.set('rankingGroupId', rankingGroupId)
     if (rankingStart) params.set('rankingStart', rankingStart)
     if (rankingEnd) params.set('rankingEnd', rankingEnd)
@@ -110,8 +224,8 @@ export default function RemoteViewerPage() {
   }, [apiGet, rankingEnd, rankingGroupId, rankingStart, selectedTagId])
 
   const loadTrace = useCallback(async () => {
-    if (!selectedTagId) return
-    const params = new URLSearchParams({ tagId: selectedTagId })
+    const tagId = selectedTagId || ALL_ACTIVITY_TAG_ID
+    const params = new URLSearchParams({ tagId })
     if (traceGroupId) params.set('groupId', traceGroupId)
     if (traceKeyword.trim()) params.set('keyword', traceKeyword.trim())
     if (traceStart) params.set('startTime', traceStart)
@@ -141,7 +255,7 @@ export default function RemoteViewerPage() {
   }, [loadDashboard])
 
   useEffect(() => {
-    if (view !== 'dashboard' || !selectedTagId) return
+    if ((view !== 'dashboard' && view !== 'groups') || !selectedTagId) return
 
     const timer = window.setInterval(() => {
       void loadDashboard({ silent: true })
@@ -154,10 +268,62 @@ export default function RemoteViewerPage() {
     if (view === 'trace') void loadTrace()
   }, [loadTrace, view])
 
+  useEffect(() => {
+    if (refreshCooldownRemaining <= 0) return
+    const timer = window.setInterval(() => {
+      setRefreshCooldownRemaining(value => Math.max(0, value - 1))
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [refreshCooldownRemaining])
+
+  useEffect(() => {
+    setGroupRankPage(1)
+  }, [selectedTagId])
+
+  async function requestLatestData() {
+    if (isRequestingLatestData || refreshCooldownRemaining > 0) return
+
+    setIsRequestingLatestData(true)
+    setError('')
+    try {
+      const response = await fetch('/api/invite/sync-request', {
+        method: 'POST',
+        cache: 'no-store'
+      })
+      const payload = await response.json().catch(() => ({})) as {
+        accepted?: boolean
+        cooldown?: boolean
+        remainingSeconds?: number
+        cooldownSeconds?: number
+        error?: string
+      }
+      if (!response.ok) {
+        throw new Error(payload.error || '刷新请求提交失败')
+      }
+
+      if (payload.cooldown) {
+        const remaining = Math.max(1, Number(payload.remainingSeconds || 1))
+        setRefreshCooldownRemaining(remaining)
+        showNotice(`还没到冷却时间，剩余 ${remaining} 秒`)
+        return
+      }
+
+      setRefreshCooldownRemaining(Number(payload.cooldownSeconds || REFRESH_COOLDOWN_SECONDS))
+      showNotice('已通知本地同步，页面会自动刷新最新数据')
+      void loadDashboard({ silent: true })
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setIsRequestingLatestData(false)
+    }
+  }
+
   async function exportCsv(type: 'ranking' | 'trace') {
-    if (!selectedTagId) return
-    const params = new URLSearchParams({ tagId: selectedTagId })
+    const tagId = selectedTagId || ALL_ACTIVITY_TAG_ID
+    const params = new URLSearchParams({ tagId })
     let endpoint = '/api/invite/export/ranking'
+    let filename = '邀请排行榜.csv'
+    let actionKey = 'ranking'
 
     if (type === 'ranking') {
       if (rankingGroupId) params.set('rankingGroupId', rankingGroupId)
@@ -165,6 +331,8 @@ export default function RemoteViewerPage() {
       if (rankingEnd) params.set('rankingEnd', rankingEnd)
     } else {
       endpoint = '/api/invite/export/member-trace'
+      filename = '群成员溯源.csv'
+      actionKey = 'trace'
       if (traceGroupId) params.set('groupId', traceGroupId)
       if (traceKeyword.trim()) params.set('keyword', traceKeyword.trim())
       if (traceStart) params.set('startTime', traceStart)
@@ -173,24 +341,104 @@ export default function RemoteViewerPage() {
       if (traceAttribution) params.set('attribution', traceAttribution)
     }
 
-    const response = await fetch(`${endpoint}?${params}`)
-    if (!response.ok) {
-      setError('导出失败，请检查远程数据配置')
+    await downloadExport(endpoint, params, filename, actionKey)
+  }
+
+  function exportInviteRankingImage() {
+    const rows = dashboard.inviteRanking.map(row => ({
+      name: row.inviterName || row.inviterId || '未知来源',
+      count: Number(row.count || 0)
+    }))
+    if (!rows.length) {
+      showNotice('暂无排行榜数据可下载')
       return
     }
-    const blob = await response.blob()
+
+    const selectedGroup = rankingGroupId ? dashboard.groups.find(group => group.id === rankingGroupId) : undefined
+    const scopeLabel = selectedGroup?.name || '所有群'
+    const total = rows.reduce((sum, row) => sum + row.count, 0)
+    const date = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+    const ok = downloadRankingImage({
+      title: `【${scopeLabel}】邀请人数排行榜（招募者 ${rows.length} 名，总人数 ${formatNumber(total)}）`,
+      filename: `${sanitizeDownloadFilename(`邀请人数排行榜-${selectedScopeFileLabel}-${scopeLabel}-${date}`)}.png`,
+      rows
+    })
+    showNotice(ok ? '排行榜图片已下载' : '图片生成失败')
+  }
+
+  async function exportGroups(mode: 'summary' | 'list' | 'batch' | 'member', group?: { groupId: string; groupName: string }) {
+    const tagId = selectedTagId || ALL_ACTIVITY_TAG_ID
+    const params = new URLSearchParams({ tagId, mode })
+    let filename = '发售群列表.csv'
+    let actionKey = `groups:${mode}`
+
+    if (mode === 'summary') {
+      params.set('includeQuit', String(includeQuitInTotal))
+      filename = '发售群人数汇总.csv'
+    } else if (mode === 'batch') {
+      filename = '发售群员批量.zip'
+    } else if (mode === 'member' && group) {
+      params.set('groupId', group.groupId)
+      params.set('groupName', group.groupName)
+      filename = `${sanitizeDownloadFilename(group.groupName)}.csv`
+      actionKey = `groups:member:${group.groupId}`
+    }
+
+    await downloadExport('/api/invite/export/groups', params, filename, actionKey)
+  }
+
+  async function downloadExport(endpoint: string, params: URLSearchParams, filename: string, actionKey: string) {
+    setExportingAction(actionKey)
+    setError('')
+    try {
+      const response = await fetch(`${endpoint}?${params}`)
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}))
+        throw new Error(payload.error || '导出失败，请检查远程数据配置')
+      }
+      const blob = await response.blob()
+      triggerDownload(blob, filename)
+      showNotice('下载已开始')
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setExportingAction('')
+    }
+  }
+
+  function triggerDownload(blob: Blob, filename: string) {
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = type === 'ranking' ? '邀请排行榜.csv' : '群成员溯源.csv'
+    link.download = filename
     link.click()
-    URL.revokeObjectURL(url)
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
 
   const memberTotal = includeQuitInTotal ? dashboard.cards.totalMembersWithQuit : dashboard.cards.totalMembers
   const rankingMax = Math.max(...dashboard.inviteRanking.map(row => row.count), 1)
-  const groupMax = Math.max(...dashboard.groupRanking.map(row => row.count), 1)
+  const groupRankPageCount = Math.max(1, Math.ceil(dashboard.groupRanking.length / GROUP_RANK_PAGE_SIZE))
+  const safeGroupRankPage = Math.min(groupRankPage, groupRankPageCount)
+  const groupRankStart = (safeGroupRankPage - 1) * GROUP_RANK_PAGE_SIZE
+  const groupRankRows = dashboard.groupRanking.slice(groupRankStart, groupRankStart + GROUP_RANK_PAGE_SIZE)
+  const groupMax = Math.max(...groupRankRows.map(row => row.count), 1)
   const chartPoints = buildLinePoints(dashboard.hourlyDistribution)
+  const groupRows = useMemo(() => {
+    const counts = new Map(dashboard.groupRanking.map(row => [row.groupId, row.count]))
+    return dashboard.groups.map((group, index) => ({
+      index: index + 1,
+      groupId: group.id,
+      groupName: group.name,
+      avatarUrl: group.avatarUrl,
+      count: counts.get(group.id) || 0
+    }))
+  }, [dashboard.groupRanking, dashboard.groups])
+
+  useEffect(() => {
+    if (groupRankPage > groupRankPageCount) {
+      setGroupRankPage(groupRankPageCount)
+    }
+  }, [groupRankPage, groupRankPageCount])
 
   async function copyRawMessage() {
     if (!rawMessage.trim()) {
@@ -213,15 +461,11 @@ export default function RemoteViewerPage() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="brand">
-          <strong>WeFlow 邀请统计</strong>
-          <span>远程用户大屏</span>
-        </div>
         <nav className="screen-nav" aria-label="远程用户视图">
           <button className={view === 'dashboard' ? 'active' : ''} onClick={() => setView('dashboard')}>▥ 数据大屏</button>
+          <button className={view === 'groups' ? 'active' : ''} onClick={() => setView('groups')}>▣ 发售群列表</button>
           <button className={view === 'trace' ? 'active' : ''} onClick={() => setView('trace')}>♙ 群成员溯源</button>
         </nav>
-        <div className="topbar-spacer" aria-hidden="true" />
       </header>
 
       <main className="screen">
@@ -229,9 +473,21 @@ export default function RemoteViewerPage() {
               <label className="field">
                 <span>活动标签</span>
                 <select value={selectedTagId} onChange={event => setSelectedTagId(event.target.value)}>
+                  <option value={ALL_ACTIVITY_TAG_ID}>全部活动</option>
                   {tags.map(tag => <option key={tag.id} value={tag.id}>{tag.name}</option>)}
                 </select>
               </label>
+              <div className="toolbar-actions">
+                <button
+                  type="button"
+                  className="refresh-latest-btn"
+                  disabled={isRequestingLatestData || refreshCooldownRemaining > 0}
+                  onClick={() => void requestLatestData()}
+                >
+                  <span>{isRequestingLatestData ? '请求中...' : '刷新最新数据'}</span>
+                  {refreshCooldownRemaining > 0 && <em>{refreshCooldownRemaining}s</em>}
+                </button>
+              </div>
             </section>
 
             {error && <div className="error-banner">{error}</div>}
@@ -261,7 +517,7 @@ export default function RemoteViewerPage() {
                 <section className="dashboard-main">
                   <div className="left-column">
                     <section className="panel">
-                      <PanelTitle title="进群时段分布" subtitle="按当前活动标签全部有效入群记录统计" />
+                      <PanelTitle title="进群时段分布" subtitle={isAllActivitySelected ? '按全部活动记录统计' : '按当前活动标签全部有效入群记录统计'} />
                       <div className="chart-line">
                         <div className="axis-y"><span>{chartPoints.max}</span><span>{Math.ceil(chartPoints.max * 0.75)}</span><span>{Math.ceil(chartPoints.max * 0.5)}</span><span>{Math.ceil(chartPoints.max * 0.25)}</span><span>0</span></div>
                         <svg className="line-svg" viewBox="0 0 310 190" preserveAspectRatio="none" aria-hidden="true">
@@ -280,11 +536,11 @@ export default function RemoteViewerPage() {
                     </section>
 
                     <section className="panel">
-                      <PanelTitle title="群人数展示" subtitle="当前活动标签下群成员规模" />
+                      <PanelTitle title="群人数展示" subtitle={isAllActivitySelected ? '全部活动中的群成员规模' : '当前活动标签下群成员规模'} />
                       <div className="group-rank">
-                        {dashboard.groupRanking.slice(0, 6).map((row, index) => (
+                        {groupRankRows.map((row, index) => (
                           <div className="group-row" key={row.groupId}>
-                            <div className={`rank-no rank-${index + 1}`}>{index + 1}</div>
+                            <div className={`rank-no rank-${groupRankStart + index + 1}`}>{groupRankStart + index + 1}</div>
                             <div>
                               <div className="group-name">{row.groupName}</div>
                               <div className="bar-track"><div className="bar-fill" style={{ width: `${Math.max(4, row.count / groupMax * 100)}%` }} /></div>
@@ -293,6 +549,15 @@ export default function RemoteViewerPage() {
                           </div>
                         ))}
                         {dashboard.groupRanking.length === 0 && <EmptyState text="暂无群人数数据" />}
+                        {dashboard.groupRanking.length > GROUP_RANK_PAGE_SIZE && (
+                          <div className="group-rank-pagination">
+                            <span>共 {formatNumber(dashboard.groupRanking.length)} 个群，{safeGroupRankPage}/{groupRankPageCount}</span>
+                            <div>
+                              <button type="button" disabled={safeGroupRankPage <= 1} onClick={() => setGroupRankPage(page => Math.max(1, page - 1))}>上一页</button>
+                              <button type="button" disabled={safeGroupRankPage >= groupRankPageCount} onClick={() => setGroupRankPage(page => Math.min(groupRankPageCount, page + 1))}>下一页</button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </section>
                   </div>
@@ -301,17 +566,18 @@ export default function RemoteViewerPage() {
                     <div className="panel-title">
                       <div>
                         <h2>邀请人数排行榜</h2>
-                        <p>【{selectedTag?.name || '当前活动'}】招募者 {dashboard.inviteRanking.length} 名，有效入群人数 {formatNumber(memberTotal)}</p>
+                        <p>【{selectedScopeLabel}】招募者 {dashboard.inviteRanking.length} 名，有效入群人数 {formatNumber(memberTotal)}</p>
                       </div>
                       <div className="panel-actions">
                         <button className={`icon-btn ${chartMode === 'bar' ? 'active' : ''}`} title="柱状图" onClick={() => setChartMode('bar')}>▥</button>
                         <button className={`icon-btn ${chartMode === 'pie' ? 'active' : ''}`} title="占比图" onClick={() => setChartMode('pie')}>◔</button>
                         <button className="icon-btn" title="导出" onClick={() => void exportCsv('ranking')}>⇩</button>
+                        <button className="icon-btn" title="下载图片" onClick={exportInviteRankingImage}>▧</button>
                       </div>
                     </div>
                     <div className="ranking-toolbar">
                       <select value={rankingGroupId} onChange={event => setRankingGroupId(event.target.value)}>
-                        <option value="">当前活动下全部群</option>
+                        <option value="">{isAllActivitySelected ? '全部活动下全部群' : '当前活动下全部群'}</option>
                         {dashboard.groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}
                       </select>
                       <div className="datetime-range" aria-label="排行榜时间范围">
@@ -319,6 +585,7 @@ export default function RemoteViewerPage() {
                         <input type="datetime-local" step="1" aria-label="排行榜结束时间" value={rankingEnd} onChange={event => setRankingEnd(event.target.value)} />
                       </div>
                       <button onClick={() => void exportCsv('ranking')}>导出</button>
+                      <button onClick={exportInviteRankingImage}>下载图片</button>
                     </div>
                     {chartMode === 'bar' ? (
                       <div className="bar-chart">
@@ -350,7 +617,9 @@ export default function RemoteViewerPage() {
                     <div className="activity-list">
                       {dashboard.recentActivities.map((row, index) => (
                         <div className="activity-item" key={`${row.memberName}-${row.time}-${index}`}>
-                          <div className="avatar">{row.memberName.slice(0, 1) || '成'}</div>
+                          <div className="avatar">
+                            {row.avatarUrl ? <img src={row.avatarUrl} alt="" referrerPolicy="no-referrer" /> : <span>{row.memberName.slice(0, 1) || '成'}</span>}
+                          </div>
                           <div className="activity-main">
                             <strong>{row.memberName}</strong>
                             <span>{row.sourceLabel} · {row.sourceName}<br />{row.groupName}</span>
@@ -361,6 +630,94 @@ export default function RemoteViewerPage() {
                       {dashboard.recentActivities.length === 0 && <EmptyState text="暂无动态" />}
                     </div>
                   </section>
+                </section>
+              </section>
+            )}
+
+            {view === 'groups' && (
+              <section className="view active">
+                <section className="panel table-panel groups-panel">
+                  <div className="groups-head">
+                    <div className="trace-title">
+                      <h2>发售群列表</h2>
+                      <p>【{selectedScopeLabel}】共 {formatNumber(groupRows.length)} 个群，{formatNumber(memberTotal)} 人</p>
+                    </div>
+                    <div className="groups-summary">
+                      <label className="check">
+                        <input
+                          type="checkbox"
+                          checked={includeQuitInTotal}
+                          onChange={event => setIncludeQuitInTotal(event.target.checked)}
+                        />
+                        包含已退群的人
+                      </label>
+                      <span className="groups-total">共 {formatNumber(groupRows.length)} 个群，{formatNumber(memberTotal)} 人</span>
+                    </div>
+                  </div>
+                  <div className="groups-actions">
+                    <button
+                      className="groups-action primary"
+                      disabled={Boolean(exportingAction)}
+                      onClick={() => void exportGroups('summary')}
+                    >
+                      {exportingAction === 'groups:summary' ? '导出中...' : '合计导出群人数'}
+                    </button>
+                    <button
+                      className="groups-action success"
+                      disabled={Boolean(exportingAction)}
+                      onClick={() => void exportGroups('batch')}
+                    >
+                      {exportingAction === 'groups:batch' ? '导出中...' : '批量导出所有群员'}
+                    </button>
+                    <button
+                      className="groups-action neutral"
+                      disabled={Boolean(exportingAction)}
+                      onClick={() => void exportGroups('list')}
+                    >
+                      {exportingAction === 'groups:list' ? '导出中...' : '合计导出群列表'}
+                    </button>
+                  </div>
+                  <div className="table-wrap groups-table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>序号</th>
+                          <th>群名称</th>
+                          <th>人数</th>
+                          <th>操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {groupRows.map(row => (
+                          <tr key={row.groupId}>
+                            <td>{row.index}</td>
+                            <td>
+                              <div className="group-cell">
+                                <div className="avatar group-avatar">
+                                  {row.avatarUrl ? <img src={row.avatarUrl} alt="" referrerPolicy="no-referrer" /> : <span>{row.groupName.slice(0, 1) || '群'}</span>}
+                                </div>
+                                <div>
+                                  <span className="member-name">{row.groupName}</span>
+                                  <span className="wxid">{row.groupId}</span>
+                                </div>
+                              </div>
+                            </td>
+                            <td>{formatNumber(row.count)}</td>
+                            <td>
+                              <button
+                                className="row-export"
+                                disabled={Boolean(exportingAction)}
+                                onClick={() => void exportGroups('member', { groupId: row.groupId, groupName: row.groupName })}
+                              >
+                                {exportingAction === `groups:member:${row.groupId}` ? '导出中...' : '导出群员'}
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {groupRows.length === 0 && <EmptyState text="暂无发售群数据" />}
+                  </div>
                 </section>
               </section>
             )}
@@ -466,7 +823,17 @@ function EmptyState({ text }: { text: string }) {
 function TraceRow({ row, onRaw }: { row: MemberTraceRow; onRaw: (raw: string) => void }) {
   return (
     <tr>
-      <td><span className="member-name">{row.memberName}</span><span className="wxid">{row.wxid || '-'}</span></td>
+      <td>
+        <div className="trace-member">
+          <div className="avatar trace-avatar">
+            {row.avatarUrl ? <img src={row.avatarUrl} alt="" referrerPolicy="no-referrer" /> : <span>{row.memberName.slice(0, 1) || '成'}</span>}
+          </div>
+          <div>
+            <span className="member-name">{row.memberName}</span>
+            <span className="wxid">{row.wxid || '-'}</span>
+          </div>
+        </div>
+      </td>
       <td>{row.source}</td>
       <td>{row.groupName}</td>
       <td>{formatDateTime(row.time)}</td>
@@ -534,5 +901,13 @@ function statusText(status: string) {
 function attributionText(attribution: string) {
   if (attribution === 'invalid') return '无效'
   if (attribution === 'pending') return '待确认'
+  if (attribution === 'none') return '-'
   return '有效'
+}
+
+function sanitizeDownloadFilename(value: string) {
+  return value
+    .replace(/[\\/:*?"<>|]+/g, '-')
+    .replace(/[\u0000-\u001f]/g, '')
+    .trim() || 'download'
 }

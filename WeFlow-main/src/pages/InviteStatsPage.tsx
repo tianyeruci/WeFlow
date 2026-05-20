@@ -2,12 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import ReactECharts from 'echarts-for-react'
 import {
   AlertTriangle,
+  Ban,
   BarChart3,
   Check,
   Clock,
   Copy,
   Download,
   FileSpreadsheet,
+  ImageDown,
   Loader2,
   PieChart,
   Plus,
@@ -17,12 +19,14 @@ import {
   Sparkles,
   Tags,
   Trash2,
+  Upload,
   Users,
   X
 } from 'lucide-react'
 import type {
   InviteActivityTag,
   InviteDashboardData,
+  InviteManualRecordPayload,
   InviteMemberTraceFilters,
   InviteMemberTraceRow,
   InviteScanLog,
@@ -34,6 +38,17 @@ import './InviteStatsPage.scss'
 type ViewKey = 'dashboard' | 'groups' | 'trace' | 'pending'
 type ChartMode = 'bar' | 'pie'
 type GroupSortKey = 'member_count' | 'today_join_count' | 'today_quit_count' | 'last_scan_time' | 'recent_invite_time'
+type ManualInviteMode = 'confirm' | 'add'
+const ALL_ACTIVITY_TAG_ID = '__all__'
+const GROUP_RANK_PAGE_SIZE = 10
+
+type ManualInviteFormState = {
+  groupId: string
+  user: string
+  wxId: string
+  inviter: string
+  inviterWxId: string
+}
 
 const viewItems: Array<{ key: ViewKey; label: string; icon: typeof BarChart3 }> = [
   { key: 'dashboard', label: '数据大屏', icon: BarChart3 },
@@ -117,16 +132,34 @@ const statusLabel = (value?: string): string => {
   return value || '-'
 }
 
+const scanModeLabel = (value?: string): string => {
+  if (value === 'quit-check') return '检查是否退出群'
+  return '增量扫描'
+}
+
+const isTraceQuitRow = (row: InviteMemberTraceRow): boolean => {
+  return row.status !== 'ignored' && (row.event_type === 'quit' || row.delete_flag === 1)
+}
+
 const traceStatusLabel = (row: InviteMemberTraceRow): string => {
-  if (row.status !== 'confirmed') return '待确认'
-  if (row.event_type === 'quit' || row.delete_flag === 1) return '已退出群'
+  if (row.status === 'pending') return '待确认'
+  if (isTraceQuitRow(row)) return '已退出群'
   return '未退出群'
 }
 
 const traceStatusClass = (row: InviteMemberTraceRow): string => {
-  if (row.status !== 'confirmed') return 'pending'
-  if (row.event_type === 'quit' || row.delete_flag === 1) return 'quit'
+  if (row.status === 'pending') return 'pending'
+  if (isTraceQuitRow(row)) return 'quit'
   return 'active'
+}
+
+const traceAttributionLabel = (row: InviteMemberTraceRow): string => {
+  if (row.status === 'ignored') return '无效'
+  if (row.status !== 'confirmed') return '待确认'
+  if (row.event_type !== 'invite') return '-'
+  if (row.valid_flag === 1) return '有效'
+  if (row.valid_flag === -1) return '无效'
+  return '-'
 }
 
 const inferExportFormat = (filePath: string): 'csv' | 'xlsx' => {
@@ -134,6 +167,119 @@ const inferExportFormat = (filePath: string): 'csv' | 'xlsx' => {
 }
 
 const fileNameDate = (): string => toDateInput(new Date()).replace(/-/g, '')
+
+const sanitizeDownloadFilename = (value: string): string => {
+  return value
+    .replace(/[\\/:*?"<>|]+/g, '-')
+    .replace(/[\u0000-\u001f]/g, '')
+    .trim() || 'download'
+}
+
+const rankingImageColors = ['#59b8ad', '#e3c763', '#e75a6c', '#ffd8b4', '#5b9bea', '#87cba2', '#f28a42', '#586aa5', '#bf7bd7']
+
+function downloadRankingImage(input: {
+  title: string
+  filename: string
+  rows: Array<{ name: string; count: number }>
+}) {
+  if (!input.rows.length) return false
+
+  const width = 1000
+  const left = 260
+  const right = 130
+  const top = 74
+  const rowHeight = 48
+  const bottom = 44
+  const chartWidth = width - left - right
+  const height = Math.max(260, top + input.rows.length * rowHeight + bottom)
+  const scale = Math.min(2, window.devicePixelRatio || 1)
+  const canvas = document.createElement('canvas')
+  canvas.width = width * scale
+  canvas.height = height * scale
+  canvas.style.width = `${width}px`
+  canvas.style.height = `${height}px`
+
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return false
+
+  ctx.scale(scale, scale)
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, width, height)
+
+  ctx.fillStyle = '#1f2937'
+  ctx.font = '700 24px "Microsoft YaHei", "PingFang SC", sans-serif'
+  ctx.fillText(input.title, 12, 32)
+
+  const maxCount = Math.max(1, ...input.rows.map((row) => row.count))
+  ctx.strokeStyle = '#e6e8ed'
+  ctx.lineWidth = 1
+  for (let index = 0; index <= 4; index += 1) {
+    const x = left + (chartWidth * index) / 4
+    ctx.beginPath()
+    ctx.moveTo(x, top - 24)
+    ctx.lineTo(x, height - bottom + 4)
+    ctx.stroke()
+  }
+
+  ctx.strokeStyle = '#9aa3b2'
+  ctx.beginPath()
+  ctx.moveTo(left, top - 24)
+  ctx.lineTo(left, height - bottom + 4)
+  ctx.stroke()
+
+  input.rows.forEach((row, index) => {
+    const y = top + index * rowHeight
+    const barWidth = Math.max(8, (row.count / maxCount) * chartWidth)
+    const barY = y + 10
+    const barHeight = 18
+    const radius = 9
+
+    ctx.fillStyle = '#6f7785'
+    ctx.font = '400 20px "Microsoft YaHei", "PingFang SC", sans-serif'
+    ctx.textAlign = 'right'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(ellipsizeCanvasText(ctx, row.name || '未知来源', left - 18, 210), left - 14, y + 19)
+
+    ctx.fillStyle = rankingImageColors[index % rankingImageColors.length]
+    drawRoundedBar(ctx, left, barY, barWidth, barHeight, radius)
+
+    ctx.fillStyle = '#85878d'
+    ctx.font = '500 22px "Microsoft YaHei", "PingFang SC", sans-serif'
+    ctx.textAlign = 'left'
+    ctx.fillText(formatNumber(row.count), left + barWidth + 10, y + 19)
+  })
+
+  const link = document.createElement('a')
+  link.href = canvas.toDataURL('image/png')
+  link.download = input.filename
+  link.click()
+  return true
+}
+
+function drawRoundedBar(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) {
+  const safeRadius = Math.min(radius, width / 2, height / 2)
+  ctx.beginPath()
+  ctx.moveTo(x + safeRadius, y)
+  ctx.lineTo(x + width - safeRadius, y)
+  ctx.quadraticCurveTo(x + width, y, x + width, y + safeRadius)
+  ctx.lineTo(x + width, y + height - safeRadius)
+  ctx.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height)
+  ctx.lineTo(x + safeRadius, y + height)
+  ctx.quadraticCurveTo(x, y + height, x, y + height - safeRadius)
+  ctx.lineTo(x, y + safeRadius)
+  ctx.quadraticCurveTo(x, y, x + safeRadius, y)
+  ctx.fill()
+}
+
+function ellipsizeCanvasText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number, fallbackWidth: number) {
+  const width = Number.isFinite(maxWidth) && maxWidth > 0 ? maxWidth : fallbackWidth
+  if (ctx.measureText(text).width <= width) return text
+  let next = text
+  while (next.length > 1 && ctx.measureText(`${next}...`).width > width) {
+    next = next.slice(0, -1)
+  }
+  return `${next}...`
+}
 
 const formatCompactDateTime = (value: string): string => {
   if (!value) return ''
@@ -204,9 +350,11 @@ function InviteStatsPage() {
   const [activeView, setActiveView] = useState<ViewKey>('dashboard')
   const [tags, setTags] = useState<InviteActivityTag[]>([])
   const [groups, setGroups] = useState<InviteStatsGroupRow[]>([])
-  const [selectedTagId, setSelectedTagId] = useState('')
+  const [selectedTagId, setSelectedTagId] = useState(ALL_ACTIVITY_TAG_ID)
   const [includeQuitMembers, setIncludeQuitMembers] = useState(false)
+  const [dedupeMembers, setDedupeMembers] = useState(false)
   const [chartMode, setChartMode] = useState<ChartMode>('bar')
+  const [groupRankPage, setGroupRankPage] = useState(1)
   const [rankingGroupId, setRankingGroupId] = useState('')
   const [rankingStartDateTime, setRankingStartDateTime] = useState('')
   const [rankingEndDateTime, setRankingEndDateTime] = useState('')
@@ -224,6 +372,15 @@ function InviteStatsPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [isDashboardLoading, setIsDashboardLoading] = useState(false)
   const [rawPreview, setRawPreview] = useState<InviteMemberTraceRow | null>(null)
+  const [manualInviteDialog, setManualInviteDialog] = useState<{ mode: ManualInviteMode; row: InviteMemberTraceRow } | null>(null)
+  const [manualInviteForm, setManualInviteForm] = useState<ManualInviteFormState>({
+    groupId: '',
+    user: '',
+    wxId: '',
+    inviter: '',
+    inviterWxId: ''
+  })
+  const [isSavingManualInvite, setIsSavingManualInvite] = useState(false)
   const [createTagDialogOpen, setCreateTagDialogOpen] = useState(false)
   const [createTagName, setCreateTagName] = useState('')
   const [isCreatingTag, setIsCreatingTag] = useState(false)
@@ -241,9 +398,15 @@ function InviteStatsPage() {
   const [toast, setToast] = useState('')
 
   const selectedTag = useMemo(
-    () => tags.find((tag) => tag.tag_id === selectedTagId),
+    () => selectedTagId === ALL_ACTIVITY_TAG_ID ? undefined : tags.find((tag) => tag.tag_id === selectedTagId),
     [tags, selectedTagId]
   )
+  const isAllActivitySelected = selectedTagId === ALL_ACTIVITY_TAG_ID
+  const selectedScopeLabel = isAllActivitySelected ? '全部活动' : (selectedTag?.tag_name || '当前活动')
+  const selectedScopeFileLabel = isAllActivitySelected ? '全部活动' : (selectedTag?.tag_name || '活动')
+  const memberTotalLabel = includeQuitMembers
+    ? (dedupeMembers ? '总成员数含退群 / 去重' : '总成员数含退群 / 不去重')
+    : (dedupeMembers ? '总成员数仅在群 / 去重' : '总成员数仅在群 / 不去重')
 
   const rankingStartTime = useMemo(() => dateTimeSeconds(rankingStartDateTime), [rankingStartDateTime])
   const rankingEndTime = useMemo(() => dateTimeSeconds(rankingEndDateTime), [rankingEndDateTime])
@@ -263,6 +426,21 @@ function InviteStatsPage() {
     setRemoteSyncDialogOpen(true)
   }, [])
 
+  const resolveRemoteSyncOptions = useCallback(async () => {
+    const cachedEndpoint = remoteSyncUrl.trim()
+    const cachedToken = remoteSyncToken.trim()
+    if (cachedEndpoint && cachedToken) {
+      return { endpoint: cachedEndpoint, token: cachedToken }
+    }
+
+    const config = await window.electronAPI.inviteStats.getRemoteSyncConfig()
+    const endpoint = cachedEndpoint || config.endpoint || ''
+    const token = cachedToken || config.token || ''
+    if (!cachedEndpoint && config.endpoint) setRemoteSyncUrl(config.endpoint)
+    if (!cachedToken && config.token) setRemoteSyncToken(config.token)
+    return { endpoint: endpoint.trim(), token: token.trim() }
+  }, [remoteSyncToken, remoteSyncUrl])
+
   const saveRemoteSyncSettings = async () => {
     setIsSavingRemoteSync(true)
     try {
@@ -277,24 +455,22 @@ function InviteStatsPage() {
     }
   }
 
-  const syncRemoteNow = async () => {
+  const syncRemoteNow = async (closeDialog = true) => {
     setIsRemoteSyncing(true)
     try {
+      const options = await resolveRemoteSyncOptions()
       await Promise.all([
-        configService.setInviteRemoteSyncUrl(remoteSyncUrl),
-        configService.setInviteRemoteSyncToken(remoteSyncToken)
+        configService.setInviteRemoteSyncUrl(options.endpoint),
+        configService.setInviteRemoteSyncToken(options.token)
       ])
-      const result = await window.electronAPI.inviteStats.syncRemote({
-        endpoint: remoteSyncUrl.trim(),
-        token: remoteSyncToken.trim()
-      })
+      const result = await window.electronAPI.inviteStats.syncRemote(options)
       if (!result.success) {
         showToast(result.error || '远程同步失败')
         return
       }
       const total = Object.values(result.counts || {}).reduce((sum, count) => sum + Number(count || 0), 0)
       showToast(total > 0 ? `远程同步完成：${total} 条变更` : '远程同步完成，暂无新变更')
-      setRemoteSyncDialogOpen(false)
+      if (closeDialog) setRemoteSyncDialogOpen(false)
     } finally {
       setIsRemoteSyncing(false)
     }
@@ -322,6 +498,31 @@ function InviteStatsPage() {
       const copied = document.execCommand('copy')
       document.body.removeChild(textarea)
       showToast(copied ? '原始消息已复制' : '复制失败，请手动选择文本复制')
+    }
+  }
+
+  const copyManualInviteName = async () => {
+    const text = (manualInviteForm.user || manualInviteDialog?.row.user || '').trim()
+    if (!text) {
+      showToast('暂无可复制内容')
+      return
+    }
+
+    try {
+      await navigator.clipboard.writeText(text)
+      showToast('被邀请人昵称已复制')
+    } catch {
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.setAttribute('readonly', 'true')
+      textarea.style.position = 'fixed'
+      textarea.style.top = '-9999px'
+      textarea.style.left = '-9999px'
+      document.body.appendChild(textarea)
+      textarea.select()
+      const copied = document.execCommand('copy')
+      document.body.removeChild(textarea)
+      showToast(copied ? '被邀请人昵称已复制' : '复制失败，请手动选择文本复制')
     }
   }
 
@@ -382,10 +583,9 @@ function InviteStatsPage() {
         setScanLogs(scanResult.data.logs || [])
       }
 
-      const candidateTagId = preferredTagId || selectedTagId
-      const stillExists = nextTags.some((tag) => tag.tag_id === candidateTagId)
-      const fallbackTag = nextTags.find((tag) => tag.enabled) || nextTags[0]
-      setSelectedTagId(stillExists ? candidateTagId : (fallbackTag?.tag_id || ''))
+      const candidateTagId = preferredTagId || selectedTagId || ALL_ACTIVITY_TAG_ID
+      const stillExists = candidateTagId === ALL_ACTIVITY_TAG_ID || nextTags.some((tag) => tag.tag_id === candidateTagId)
+      setSelectedTagId(stillExists ? candidateTagId : ALL_ACTIVITY_TAG_ID)
 
       if (!tagResult.success) showToast(tagResult.error || '活动标签读取失败')
       if (!groupResult.success) showToast(groupResult.error || '群列表读取失败')
@@ -395,17 +595,19 @@ function InviteStatsPage() {
   }, [selectedTagId, showToast])
 
   const loadDashboard = useCallback(async () => {
-    if (!selectedTagId) {
+    const tagId = selectedTagId || ALL_ACTIVITY_TAG_ID
+    if (!tagId) {
       setDashboard(null)
       return
     }
     setIsDashboardLoading(true)
     try {
       const result = await window.electronAPI.inviteStats.getDashboard({
-        tagId: selectedTagId,
+        tagId,
         startTime: rankingStartTime,
         endTime: rankingEndTime,
         includeQuitMembers,
+        dedupeMembers,
         rankingGroupId: rankingGroupId || undefined
       })
       if (result.success) {
@@ -420,7 +622,7 @@ function InviteStatsPage() {
     } finally {
       setIsDashboardLoading(false)
     }
-  }, [includeQuitMembers, rankingEndTime, rankingGroupId, rankingStartTime, selectedTagId, showToast])
+  }, [dedupeMembers, includeQuitMembers, rankingEndTime, rankingGroupId, rankingStartTime, selectedTagId, showToast])
 
   const loadTrace = useCallback(async () => {
     if (!selectedTagId) {
@@ -442,6 +644,16 @@ function InviteStatsPage() {
     }
   }, [selectedTagId, showToast, traceEndTime, traceFilters, traceStartTime])
 
+  const tagGroups = useMemo(
+    () => {
+      if (selectedTagId === ALL_ACTIVITY_TAG_ID) {
+        return groups.filter((group) => group.binding_enabled)
+      }
+      return groups.filter((group) => group.tag_id === selectedTagId && group.binding_enabled)
+    },
+    [groups, selectedTagId]
+  )
+
   const loadPending = useCallback(async () => {
     const result = await window.electronAPI.inviteStats.listPending({ tagId: selectedTagId || undefined })
     if (result.success) {
@@ -450,6 +662,86 @@ function InviteStatsPage() {
       showToast(result.error || '待确认记录读取失败')
     }
   }, [selectedTagId, showToast])
+
+  const openManualInviteDialog = useCallback((
+    row: InviteMemberTraceRow,
+    mode: ManualInviteMode,
+    memberName?: string
+  ) => {
+    const fallbackGroup = tagGroups[0]
+    const contextMember = (row.source_context_members || []).find((name) => name && name !== row.user)
+    setManualInviteDialog({ mode, row })
+    setManualInviteForm({
+      groupId: row.group_id || fallbackGroup?.group_id || '',
+      user: mode === 'add' ? (memberName || contextMember || '') : (row.user || ''),
+      wxId: mode === 'add' ? '' : (row.wx_id || ''),
+      inviter: row.inviter || '',
+      inviterWxId: row.inviter_wx_id || ''
+    })
+  }, [tagGroups])
+
+  const closeManualInviteDialog = useCallback(() => {
+    if (isSavingManualInvite) return
+    setManualInviteDialog(null)
+    setManualInviteForm({
+      groupId: '',
+      user: '',
+      wxId: '',
+      inviter: '',
+      inviterWxId: ''
+    })
+  }, [isSavingManualInvite])
+
+  const submitManualInviteForm = useCallback(async () => {
+    if (!manualInviteDialog) return
+    const groupId = manualInviteForm.groupId.trim()
+    const wxId = manualInviteForm.wxId.trim()
+    const inviterWxId = manualInviteForm.inviterWxId.trim()
+    const user = manualInviteForm.user.trim()
+    const inviter = manualInviteForm.inviter.trim()
+    const requiresInviterWxId = manualInviteDialog.mode === 'add' || (inviter && inviter !== '未知来源')
+    if (!groupId || !wxId || (requiresInviterWxId && !inviterWxId) || (manualInviteDialog.mode === 'add' && (!user || !inviter))) {
+      showToast(manualInviteDialog.mode === 'add' ? '请补齐新增记录所需的信息' : '请补齐群 ID、被邀请人微信 ID')
+      return
+    }
+
+    setIsSavingManualInvite(true)
+    try {
+      const row = manualInviteDialog.row
+      const result = manualInviteDialog.mode === 'confirm'
+        ? await window.electronAPI.inviteStats.confirmPending({
+          eventType: 'invite',
+          eventId: row.id,
+          groupId,
+          wxId,
+          inviterWxId
+        })
+        : await window.electronAPI.inviteStats.addManualInviteRecord({
+          sourceEventId: row.id,
+          tagId: selectedTagId || row.activity_tag_id,
+          groupId,
+          user,
+          wxId,
+          inviter,
+          inviterWxId,
+          inviteTime: row.event_time
+        } satisfies InviteManualRecordPayload)
+
+      if (!result.success) {
+        showToast(result.error || '补充信息保存失败')
+        return
+      }
+      showToast(manualInviteDialog.mode === 'confirm' ? '待确认邀请已标记有效' : '补充邀请记录已添加')
+      setManualInviteDialog(null)
+      await Promise.all([
+        loadPending(),
+        loadDashboard(),
+        loadTrace()
+      ])
+    } finally {
+      setIsSavingManualInvite(false)
+    }
+  }, [loadDashboard, loadPending, loadTrace, manualInviteDialog, manualInviteForm, selectedTagId, showToast])
 
   useEffect(() => {
     void refreshMeta()
@@ -545,6 +837,23 @@ function InviteStatsPage() {
     if (activeView === 'pending') await loadPending()
   }
 
+  const checkQuitSelectedTag = async () => {
+    if (!selectedTagId || isScanning) return
+    setIsScanning(true)
+    const result = await window.electronAPI.inviteStats.checkQuitGroups(selectedTagId)
+    if (!result.success) {
+      showToast(result.error || '退出群检查失败')
+      setIsScanning(false)
+      await refreshMeta(selectedTagId)
+      return
+    }
+    showToast(result.running ? '已有扫描任务正在运行' : '退出群检查已开始，后台异步执行')
+    await refreshMeta(selectedTagId)
+    await loadDashboard()
+    if (activeView === 'trace') await loadTrace()
+    if (activeView === 'pending') await loadPending()
+  }
+
   const updateGroupTag = async (groupId: string, tagId: string) => {
     const result = tagId
       ? await window.electronAPI.inviteStats.setGroupTag(groupId, tagId)
@@ -571,22 +880,43 @@ function InviteStatsPage() {
 
   const exportInviteRanking = async () => {
     if (!selectedTagId) return
-    const filePath = await chooseExportPath('导出邀请排行榜', `邀请排行榜-${selectedTag?.tag_name || '活动'}-${fileNameDate()}.xlsx`)
+    const filePath = await chooseExportPath('导出邀请排行榜', `邀请排行榜-${selectedScopeFileLabel}-${fileNameDate()}.xlsx`)
     if (!filePath) return
     const result = await window.electronAPI.inviteStats.exportInviteRanking({
       filePath,
       format: inferExportFormat(filePath),
-      tagId: selectedTagId,
+      tagId: selectedTagId || ALL_ACTIVITY_TAG_ID,
       startTime: rankingStartTime,
       endTime: rankingEndTime,
-      groupId: rankingGroupId || undefined
+      groupId: rankingGroupId || undefined,
+      dedupeMembers
     })
     showToast(result.success ? `已导出 ${result.count || 0} 条排行榜` : (result.error || '导出失败'))
   }
 
+  const exportInviteRankingImage = () => {
+    const rows = (dashboard?.inviteRanking || []).map((row) => ({
+      name: row.inviter || row.inviter_wx_id || '未知来源',
+      count: Number(row.invite_count || 0)
+    }))
+    if (!rows.length) {
+      showToast('暂无排行榜数据可下载')
+      return
+    }
+    const selectedGroup = rankingGroupId ? tagGroups.find((group) => group.group_id === rankingGroupId) : undefined
+    const scopeLabel = selectedGroup?.group_name || '所有群'
+    const total = rows.reduce((sum, row) => sum + row.count, 0)
+    const ok = downloadRankingImage({
+      title: `【${scopeLabel}】邀请人数排行榜（招募者 ${rows.length} 名，总人数 ${formatNumber(total)}）`,
+      filename: `${sanitizeDownloadFilename(`邀请人数排行榜-${selectedScopeFileLabel}-${scopeLabel}-${fileNameDate()}`)}.png`,
+      rows
+    })
+    showToast(ok ? '排行榜图片已下载' : '图片生成失败')
+  }
+
   const exportTrace = async () => {
     if (!selectedTagId) return
-    const filePath = await chooseExportPath('导出成员溯源', `成员溯源-${selectedTag?.tag_name || '活动'}-${fileNameDate()}.xlsx`)
+    const filePath = await chooseExportPath('导出成员溯源', `成员溯源-${selectedScopeFileLabel}-${fileNameDate()}.xlsx`)
     if (!filePath) return
     const result = await window.electronAPI.inviteStats.exportMemberTrace({
       ...traceFilters,
@@ -600,60 +930,61 @@ function InviteStatsPage() {
   }
 
   const exportRawEvents = async () => {
-    const filePath = await chooseExportPath('导出原始事件', `原始事件-${selectedTag?.tag_name || '全部'}-${fileNameDate()}.xlsx`)
+    const filePath = await chooseExportPath('导出原始事件', `原始事件-${selectedScopeFileLabel}-${fileNameDate()}.xlsx`)
     if (!filePath) return
     const result = await window.electronAPI.inviteStats.exportRawEvents({
       filePath,
       format: inferExportFormat(filePath),
-      tagId: selectedTagId || undefined
+      tagId: selectedTagId || ALL_ACTIVITY_TAG_ID
     })
     showToast(result.success ? `已导出 ${result.count || 0} 条原始事件` : (result.error || '导出失败'))
   }
 
-  const confirmPending = async (row: InviteMemberTraceRow) => {
-    const wxId = window.prompt('成员 wxid', row.wx_id || '')
-    if (wxId === null) return
+  const markPendingValid = async (row: InviteMemberTraceRow) => {
+    if (row.event_type === 'invite') {
+      openManualInviteDialog(row, 'confirm')
+      return
+    }
     const payload: {
       eventType: 'invite' | 'quit'
       eventId: string
+      groupId?: string
       wxId?: string
       inviterWxId?: string
       operatorWxId?: string
     } = {
       eventType: row.event_type,
       eventId: row.id,
-      wxId: wxId.trim() || undefined
+      groupId: row.group_id || undefined,
+      wxId: row.wx_id || undefined
     }
-    if (row.event_type === 'invite' && row.inviter && row.join_type === 'invite') {
-      const inviterWxId = window.prompt('邀请人 wxid，可留空', row.inviter_wx_id || '')
-      if (inviterWxId === null) return
-      payload.inviterWxId = inviterWxId.trim() || undefined
+    if (row.inviter_wx_id) {
+      payload.inviterWxId = row.inviter_wx_id
     }
-    if (row.event_type === 'quit' && row.operator) {
-      const operatorWxId = window.prompt('操作人 wxid，可留空', row.operator_wx_id || '')
-      if (operatorWxId === null) return
-      payload.operatorWxId = operatorWxId.trim() || undefined
+    if (row.operator_wx_id) {
+      payload.operatorWxId = row.operator_wx_id
     }
     const result = await window.electronAPI.inviteStats.confirmPending(payload)
     if (!result.success) {
-      showToast(result.error || '确认失败')
+      showToast(result.error || '标记有效失败')
       return
     }
-    showToast('记录已确认')
+    showToast('记录已标记为有效')
     await loadPending()
     await loadDashboard()
+    await loadTrace()
   }
 
-  const ignorePending = async (row: InviteMemberTraceRow) => {
+  const markPendingInvalid = async (row: InviteMemberTraceRow) => {
     const result = await window.electronAPI.inviteStats.ignorePending({
       eventType: row.event_type,
       eventId: row.id
     })
     if (!result.success) {
-      showToast(result.error || '忽略失败')
+      showToast(result.error || '标记无效失败')
       return
     }
-    showToast('记录已忽略')
+    showToast('记录已标记为无效')
     await loadPending()
     await loadDashboard()
   }
@@ -678,11 +1009,6 @@ function InviteStatsPage() {
       .sort((a, b) => Number(b[groupSort] || 0) - Number(a[groupSort] || 0))
   }, [groupSearch, groupSort, groupUnitTagFilter, groups])
 
-  const tagGroups = useMemo(
-    () => groups.filter((group) => group.tag_id === selectedTagId && group.binding_enabled),
-    [groups, selectedTagId]
-  )
-
   useEffect(() => {
     const tagGroupIds = new Set(tagGroups.map((group) => group.group_id))
     if (rankingGroupId && !tagGroupIds.has(rankingGroupId)) setRankingGroupId('')
@@ -693,6 +1019,7 @@ function InviteStatsPage() {
 
   useEffect(() => {
     setGroupUnitTagFilter(selectedTagId || '__all')
+    setGroupRankPage(1)
   }, [selectedTagId])
 
   const hourlyOption = useMemo(() => {
@@ -765,27 +1092,31 @@ function InviteStatsPage() {
 
   const cards = dashboard?.cards
   const latestLog = scanLogs[0]
-  const latestScanModeLabel = '增量扫描'
+  const latestScanModeLabel = scanModeLabel(latestLog?.scan_mode)
   const latestScanText = latestLog
     ? `${latestScanModeLabel} · ${formatShortTime(latestLog.finished_at || latestLog.started_at)} · ${statusLabel(latestLog.status)}`
     : '尚未扫描'
   const pendingBadgeCount = dashboard?.cards?.pendingCount || pendingRows.length
-  const groupRankRows = (dashboard?.groupRanking || []).slice(0, 6)
+  const groupRankingRows = dashboard?.groupRanking || []
+  const groupRankPageCount = Math.max(1, Math.ceil(groupRankingRows.length / GROUP_RANK_PAGE_SIZE))
+  const safeGroupRankPage = Math.min(groupRankPage, groupRankPageCount)
+  const groupRankStart = (safeGroupRankPage - 1) * GROUP_RANK_PAGE_SIZE
+  const groupRankRows = groupRankingRows.slice(groupRankStart, groupRankStart + GROUP_RANK_PAGE_SIZE)
   const maxGroupMemberCount = Math.max(1, ...groupRankRows.map((group) => Number(group.member_count || 0)))
   const canManageTags = activeView === 'groups'
+  const manualSelectedGroupExists = tagGroups.some((group) => group.group_id === manualInviteForm.groupId)
+
+  useEffect(() => {
+    if (groupRankPage > groupRankPageCount) {
+      setGroupRankPage(groupRankPageCount)
+    }
+  }, [groupRankPage, groupRankPageCount])
 
   return (
     <div className="invite-stats-page">
       {toast && <div className="invite-toast">{toast}</div>}
 
       <header className="invite-topbar">
-        <div className="invite-brand">
-          <div className="invite-brand-mark">邀</div>
-          <div>
-            <strong>WeFlow 邀请统计</strong>
-            <span>本地微信群邀请归因大屏</span>
-          </div>
-        </div>
         <nav className="invite-screen-nav" aria-label="邀请统计视图">
           {viewItems.map((item) => {
             const Icon = item.icon
@@ -827,6 +1158,7 @@ function InviteStatsPage() {
                 }}
               >
                 <option value="">请选择活动标签</option>
+                <option value={ALL_ACTIVITY_TAG_ID}>全部活动</option>
                 {tags.map((tag) => (
                   <option key={tag.tag_id} value={tag.tag_id}>{tag.tag_name}</option>
                 ))}
@@ -842,6 +1174,14 @@ function InviteStatsPage() {
             <button className="invite-primary-btn" onClick={() => void scanSelectedTag()} disabled={!selectedTagId || isScanning}>
               {isScanning ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}
               <span>{isScanning ? '扫描中' : '增量扫描'}</span>
+            </button>
+            <button className="invite-sync-now-btn" onClick={() => void syncRemoteNow(false)} disabled={isRemoteSyncing || isResettingInviteStats}>
+              {isRemoteSyncing ? <Loader2 size={16} className="spin" /> : <Upload size={16} />}
+              <span>{isRemoteSyncing ? '同步中' : '同步本地数据'}</span>
+            </button>
+            <button className="invite-quit-check-btn" onClick={() => void checkQuitSelectedTag()} disabled={!selectedTagId || isScanning}>
+              {isScanning ? <Loader2 size={16} className="spin" /> : <Search size={16} />}
+              <span>检查是否退出群</span>
             </button>
           </div>
           {canManageTags && (
@@ -875,16 +1215,26 @@ function InviteStatsPage() {
               <div className="invite-metric-icon"><Users size={24} /></div>
               <div>
                 <strong>{formatNumber(cards?.totalMembers || 0)}</strong>
-                <span>{includeQuitMembers ? '总成员数含退群' : '总成员数仅在群'}</span>
+                <span>{memberTotalLabel}</span>
               </div>
-              <label className="invite-metric-toggle">
-                <input
-                  type="checkbox"
-                  checked={includeQuitMembers}
-                  onChange={(event) => setIncludeQuitMembers(event.target.checked)}
-                />
-                <span>含退群</span>
-              </label>
+              <div className="invite-metric-toggles">
+                <label className="invite-metric-toggle">
+                  <input
+                    type="checkbox"
+                    checked={includeQuitMembers}
+                    onChange={(event) => setIncludeQuitMembers(event.target.checked)}
+                  />
+                  <span>含退群</span>
+                </label>
+                <label className="invite-metric-toggle">
+                  <input
+                    type="checkbox"
+                    checked={dedupeMembers}
+                    onChange={(event) => setDedupeMembers(event.target.checked)}
+                  />
+                  <span>去重</span>
+                </label>
+              </div>
             </article>
             <article className="invite-metric-card violet">
               <div className="invite-metric-icon"><BarChart3 size={24} /></div>
@@ -920,7 +1270,7 @@ function InviteStatsPage() {
                 <div className="invite-list">
                   {groupRankRows.map((group, index) => (
                     <div className="invite-rank-line" key={group.group_id}>
-                      <b className={index > 0 ? 'muted' : ''}>{index + 1}</b>
+                      <b className={groupRankStart + index > 0 ? 'muted' : ''}>{groupRankStart + index + 1}</b>
                       <div>
                         <span>{group.group_name}</span>
                         <div className="invite-mini-bar"><i style={{ width: `${Math.max(8, Math.round((Number(group.member_count || 0) / maxGroupMemberCount) * 100))}%` }} /></div>
@@ -929,16 +1279,25 @@ function InviteStatsPage() {
                     </div>
                   ))}
                   {groupRankRows.length === 0 && <div className="invite-muted">暂无群人数数据</div>}
+                  {groupRankingRows.length > GROUP_RANK_PAGE_SIZE && (
+                    <div className="invite-rank-pagination">
+                      <span>共 {formatNumber(groupRankingRows.length)} 个群，{safeGroupRankPage}/{groupRankPageCount}</span>
+                      <div>
+                        <button type="button" disabled={safeGroupRankPage <= 1} onClick={() => setGroupRankPage((page) => Math.max(1, page - 1))}>上一页</button>
+                        <button type="button" disabled={safeGroupRankPage >= groupRankPageCount} onClick={() => setGroupRankPage((page) => Math.min(groupRankPageCount, page + 1))}>下一页</button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </section>
             </div>
 
             <section className="invite-panel invite-ranking-panel">
               <div className="invite-panel-title">
-                <div>
-                  <h2>邀请人数排行榜</h2>
-                  <p>【{selectedTag?.tag_name || '当前活动'}】招募者 {dashboard?.inviteRanking?.length || 0} 名，有效入群人数 {formatNumber(cards?.totalMembers || 0)}</p>
-                </div>
+                  <div>
+                    <h2>邀请人数排行榜</h2>
+                    <p>【{selectedScopeLabel}】招募者 {dashboard?.inviteRanking?.length || 0} 名，有效入群人数 {formatNumber(cards?.totalMembers || 0)}</p>
+                  </div>
                 <div className="invite-segment">
                   <button className={chartMode === 'bar' ? 'active' : ''} onClick={() => setChartMode('bar')} title="柱状图">
                     <BarChart3 size={15} />
@@ -948,6 +1307,9 @@ function InviteStatsPage() {
                   </button>
                   <button onClick={exportInviteRanking} title="导出排行榜">
                     <Download size={15} />
+                  </button>
+                  <button onClick={exportInviteRankingImage} title="下载排行榜图片">
+                    <ImageDown size={15} />
                   </button>
                 </div>
               </div>
@@ -981,7 +1343,7 @@ function InviteStatsPage() {
                       <div className="invite-activity-avatar">{row.head_img ? <img src={row.head_img} alt="" /> : <Clock size={15} />}</div>
                       <div>
                         <strong>{row.user || '未知成员'}</strong>
-                        <span>{row.event_type === 'invite' ? `${joinTypeLabel(row.join_type)} · ${row.inviter || '未知来源'}` : quitTypeLabel(row.quit_type)}</span>
+                        <span>{isTraceQuitRow(row) ? '已退出群' : row.event_type === 'invite' ? `${joinTypeLabel(row.join_type)} · ${row.inviter || '未知来源'}` : quitTypeLabel(row.quit_type)}</span>
                         <em>{row.group_name}</em>
                       </div>
                       <time>{formatShortTime(row.event_time)}</time>
@@ -1148,16 +1510,21 @@ function InviteStatsPage() {
                 {traceRows.map((row) => (
                   <tr key={`${row.event_type}-${row.id}`}>
                     <td>
-                      <div className="invite-member-cell">
-                        <strong>{row.user || '未知成员'}</strong>
-                        <span>{row.wx_id || '未匹配 wxid'}</span>
+                      <div className="invite-trace-member-cell">
+                        <div className="invite-avatar">
+                          {row.head_img ? <img src={row.head_img} alt="" /> : <span>{(row.user || '成').slice(0, 1)}</span>}
+                        </div>
+                        <div className="invite-member-cell">
+                          <strong>{row.user || '未知成员'}</strong>
+                          <span>{row.wx_id || '未匹配 wxid'}</span>
+                        </div>
                       </div>
                     </td>
                     <td>{row.event_type === 'invite' ? `${joinTypeLabel(row.join_type)} · ${row.inviter || '未知来源'}` : quitTypeLabel(row.quit_type)}</td>
                     <td>{row.group_name}</td>
                     <td>{formatTime(row.event_time)}</td>
                     <td><span className={`invite-pill ${traceStatusClass(row)}`}>{traceStatusLabel(row)}</span></td>
-                    <td>{row.valid_flag === 1 ? '有效' : row.valid_flag === -1 ? '无效' : '-'}</td>
+                    <td>{traceAttributionLabel(row)}</td>
                     <td className="invite-raw-cell" title={row.raw_content} onDoubleClick={() => setRawPreview(row)}>
                       <span>{row.raw_content}</span>
                       {row.raw_content && <button type="button" onClick={() => setRawPreview(row)}>查看</button>}
@@ -1195,13 +1562,32 @@ function InviteStatsPage() {
                     <span>{formatTime(row.event_time)}</span>
                     <span>置信度 {Math.round((row.confidence || 0) * 100)}%</span>
                   </div>
+                  {row.source_context_members && row.source_context_members.length > 0 && (
+                    <div className="invite-pending-context">
+                      {row.source_context_members.map((name) => (
+                        <button
+                          key={name}
+                          type="button"
+                          onClick={() => openManualInviteDialog(row, 'add', name)}
+                          title="用该成员补充一条邀请记录"
+                        >
+                          {name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div className="invite-pending-actions">
-                  <button className="invite-primary-btn" onClick={() => void confirmPending(row)}>
-                    <Check size={15} />保存确认
+                  <button className="invite-primary-btn" onClick={() => void markPendingValid(row)}>
+                    <Check size={15} />有效
                   </button>
-                  <button onClick={() => void ignorePending(row)}>
-                    <X size={15} />忽略
+                  {row.event_type === 'invite' && (
+                    <button type="button" onClick={() => openManualInviteDialog(row, 'add')}>
+                      <Plus size={15} />添加信息
+                    </button>
+                  )}
+                  <button className="invite-invalid-btn" onClick={() => void markPendingInvalid(row)}>
+                    <Ban size={15} />无效
                   </button>
                 </div>
               </article>
@@ -1209,6 +1595,104 @@ function InviteStatsPage() {
             {pendingRows.length === 0 && <div className="invite-empty-inline">没有待确认记录</div>}
           </div>
         </section>
+      )}
+
+      {manualInviteDialog && (
+        <div className="invite-modal-mask" role="dialog" aria-modal="true" aria-label="补充邀请信息" onMouseDown={closeManualInviteDialog}>
+          <form
+            className="invite-manual-modal"
+            onMouseDown={(event) => event.stopPropagation()}
+            onSubmit={(event) => {
+              event.preventDefault()
+              void submitManualInviteForm()
+            }}
+          >
+            <div className="invite-modal-title">
+              <div>
+                <h2>{manualInviteDialog.mode === 'confirm' ? '补充有效邀请' : '添加邀请信息'}</h2>
+                <p>{manualInviteDialog.mode === 'confirm' ? '补齐微信 ID 后，这条待确认记录会进入真实统计。' : '从这条背景消息拆出一条真实邀请记录，并参与统计。'}</p>
+              </div>
+              <button type="button" onClick={closeManualInviteDialog} title="关闭" disabled={isSavingManualInvite}>
+                <X size={16} />
+              </button>
+            </div>
+            <div className="invite-manual-source">
+              <strong>{manualInviteDialog.row.raw_content || '无原始消息'}</strong>
+              <span>{manualInviteDialog.row.group_name} · {formatTime(manualInviteDialog.row.event_time)}</span>
+            </div>
+            <div className="invite-manual-grid">
+              <label className="invite-manual-field">
+                <span>群 ID</span>
+                <select
+                  value={manualInviteForm.groupId}
+                  onChange={(event) => setManualInviteForm((prev) => ({ ...prev, groupId: event.target.value }))}
+                  disabled={isSavingManualInvite}
+                >
+                  {!manualSelectedGroupExists && manualInviteForm.groupId && (
+                    <option value={manualInviteForm.groupId}>{manualInviteForm.groupId}</option>
+                  )}
+                  <option value="">请选择群</option>
+                  {tagGroups.map((group) => (
+                    <option key={group.group_id} value={group.group_id}>
+                      {group.group_name || group.group_id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="invite-manual-field">
+                <span className="invite-manual-field-head">
+                  <span>被邀请人</span>
+                  <button type="button" className="invite-inline-copy-btn" onClick={() => void copyManualInviteName()} disabled={!((manualInviteForm.user || manualInviteDialog?.row.user || '').trim())}>
+                    <Copy size={14} />
+                    <span>复制</span>
+                  </button>
+                </span>
+                <input
+                  value={manualInviteForm.user}
+                  onChange={(event) => setManualInviteForm((prev) => ({ ...prev, user: event.target.value }))}
+                  placeholder="成员昵称"
+                  disabled={isSavingManualInvite || manualInviteDialog.mode === 'confirm'}
+                />
+              </label>
+              <label className="invite-manual-field">
+                <span>被邀请人微信 ID</span>
+                <input
+                  value={manualInviteForm.wxId}
+                  onChange={(event) => setManualInviteForm((prev) => ({ ...prev, wxId: event.target.value }))}
+                  placeholder="wxid_xxx"
+                  disabled={isSavingManualInvite}
+                />
+              </label>
+              <label className="invite-manual-field">
+                <span>邀请人</span>
+                <input
+                  value={manualInviteForm.inviter}
+                  onChange={(event) => setManualInviteForm((prev) => ({ ...prev, inviter: event.target.value }))}
+                  placeholder="邀请人昵称"
+                  disabled={isSavingManualInvite || manualInviteDialog.mode === 'confirm'}
+                />
+              </label>
+              <label className="invite-manual-field">
+                <span>邀请人微信 ID</span>
+                <input
+                  value={manualInviteForm.inviterWxId}
+                  onChange={(event) => setManualInviteForm((prev) => ({ ...prev, inviterWxId: event.target.value }))}
+                  placeholder="wxid_xxx"
+                  disabled={isSavingManualInvite}
+                />
+              </label>
+            </div>
+            <div className="invite-modal-actions">
+              <button type="button" onClick={closeManualInviteDialog} disabled={isSavingManualInvite}>
+                取消
+              </button>
+              <button className="invite-primary-btn" type="submit" disabled={isSavingManualInvite}>
+                {isSavingManualInvite ? <Loader2 size={16} className="spin" /> : <Check size={16} />}
+                <span>{manualInviteDialog.mode === 'confirm' ? '保存为有效' : '添加信息'}</span>
+              </button>
+            </div>
+          </form>
+        </div>
       )}
 
       {createTagDialogOpen && (

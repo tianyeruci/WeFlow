@@ -8,6 +8,7 @@ import {
   TraceAttribution,
   TraceStatus
 } from '@/types/invite'
+import { csvText } from './csv'
 import { supabaseSelect } from './supabase-rest'
 
 type AnyRecord = Record<string, unknown>
@@ -24,6 +25,8 @@ type FinalStatEvent = {
   member_name?: string
   wx_id?: string
   wxid?: string
+  head_img?: string | null
+  avatar_url?: string | null
   inviter?: string
   inviter_name?: string
   inviter_wx_id?: string
@@ -39,6 +42,17 @@ type FinalStatEvent = {
   delete_flag?: number
   raw_content?: string
   source_raw_content?: string
+  raw_json?: unknown
+  updated_at?: string | null
+}
+
+type GroupTagBinding = {
+  group_id?: string
+  group_name?: string
+  activity_tag_id?: string
+  enabled?: boolean
+  member_count?: number | null
+  raw_json?: unknown
 }
 
 type DashboardFilters = {
@@ -59,6 +73,22 @@ type TraceFilters = {
   includeQuit?: boolean
 }
 
+type GroupReleaseFilters = {
+  tagId?: string
+  includeQuit?: boolean
+}
+
+type GroupMemberExportFilters = GroupReleaseFilters & {
+  groupId: string
+}
+
+type GroupExportFile = {
+  filename: string
+  content: string
+}
+
+const ALL_ACTIVITY_TAG_ID = '__all__'
+
 export async function listActivityTags(): Promise<ActivityTag[]> {
   const rows = await supabaseSelect<AnyRecord>('activity_tags', { select: '*' })
   return rows
@@ -71,14 +101,14 @@ export async function listActivityTags(): Promise<ActivityTag[]> {
 }
 
 export async function getDashboard(filters: DashboardFilters): Promise<DashboardData> {
-  const events = await loadFinalEvents(filters.tagId)
-  const confirmedEvents = events.filter(isConfirmedStatEvent)
-  const inviteEvents = confirmedEvents.filter(isInviteEvent)
-  const effectiveInviteEvents = inviteEvents.filter(isEffectiveInviteEvent)
-  const activeInviteEvents = inviteEvents.filter(row => row.delete_flag !== 1)
-  const quitEvents = confirmedEvents.filter(isQuitEvent)
-  const groups = buildGroups(confirmedEvents)
-  const rankingEvents = effectiveInviteEvents.filter(row => {
+  const [events, groupBindings] = await Promise.all([
+    loadFinalEvents(filters.tagId),
+    loadGroupBindings(filters.tagId)
+  ])
+  const inviteEvents = events.filter(isInviteEvent)
+  const quitEvents = events.filter(isQuitEvent)
+  const groups = buildGroupsFromBindings(groupBindings)
+  const rankingEvents = inviteEvents.filter(row => {
     if (filters.rankingGroupId && String(row.group_id || '') !== filters.rankingGroupId) return false
     return withinRange(row.invite_time, filters.rankingStart, filters.rankingEnd)
   })
@@ -87,52 +117,63 @@ export async function getDashboard(filters: DashboardFilters): Promise<Dashboard
     cards: {
       activeRobots: 0,
       monitoredGroups: groups.length,
-      totalMembers: countUniqueMembers(effectiveInviteEvents.filter(row => row.delete_flag !== 1)),
-      totalMembersWithQuit: countUniqueMembers(inviteEvents),
-      todayNew: countUniqueMembers(effectiveInviteEvents.filter(row => isToday(row.invite_time))),
-      todayQuit: countUniqueMembers(quitEvents.filter(row => isToday(eventTime(row)))),
+      totalMembers: inviteEvents.filter(row => row.delete_flag !== 1).length,
+      totalMembersWithQuit: inviteEvents.length,
+      todayNew: inviteEvents.filter(row => row.delete_flag !== 1 && isToday(row.invite_time)).length,
+      todayQuit: [
+        ...quitEvents.filter(row => isToday(eventTime(row))),
+        ...inviteEvents.filter(row => row.delete_flag === 1 && isToday(eventTime(row)))
+      ].length,
       pendingCount: events.filter(row => row.status === 'pending').length
     },
     groups,
-    hourlyDistribution: buildHourlyDistribution(effectiveInviteEvents),
+    hourlyDistribution: buildHourlyDistribution(inviteEvents),
     inviteRanking: buildInviteRanking(rankingEvents),
-    groupRanking: buildGroupRanking(activeInviteEvents),
-    recentActivities: confirmedEvents
+    groupRanking: buildGroupRanking(groupBindings),
+    recentActivities: events
       .slice()
       .sort((a, b) => timeValue(eventTime(b)) - timeValue(eventTime(a)))
       .slice(0, 9)
-      .map(row => ({
-        eventType: isQuitEvent(row) ? 'quit' as const : 'invite' as const,
-        memberName: memberName(row),
-        sourceName: isQuitEvent(row) ? operatorName(row) : inviterName(row),
-        sourceLabel: isQuitEvent(row) ? quitTypeText(row.quit_type) : joinTypeText(row),
-        groupName: groupName(row),
-        time: eventTime(row)
-      }))
+      .map(row => {
+        const rowIsQuit = isQuitEvent(row) || row.delete_flag === 1
+        const sourceName = isQuitEvent(row) ? operatorName(row) : row.delete_flag === 1 ? '自动检查' : inviterName(row)
+        const sourceLabel = rowIsQuit
+          ? isQuitEvent(row) ? quitTypeText(row.quit_type) : '已退出群'
+          : joinTypeText(row)
+        return {
+          eventType: rowIsQuit ? 'quit' as const : 'invite' as const,
+          memberName: memberName(row),
+          avatarUrl: memberAvatarUrl(row),
+          sourceName,
+          sourceLabel,
+          groupName: groupName(row),
+          time: eventTime(row)
+        }
+      })
   }
 }
 
 export async function getMemberTrace(filters: TraceFilters): Promise<MemberTraceData> {
   const events = await loadFinalEvents(filters.tagId)
-  const groups = buildGroups(events)
+  const groups = buildGroupsFromEvents(events)
   const keyword = (filters.keyword || '').trim().toLowerCase()
 
   const rows = events
     .filter(row => {
-      const eventTime = row.invite_time || row.exit_time || row.created_time || null
+      const traceEventTime = eventTime(row)
       const traceStatus = toTraceStatus(row)
       const traceAttribution = toTraceAttribution(row)
 
       if (!isVisibleForTrace(row)) return false
       if (filters.groupId && String(row.group_id || '') !== filters.groupId) return false
       if (keyword && !memberName(row).toLowerCase().includes(keyword)) return false
-      if (!withinRange(eventTime, filters.startTime, filters.endTime)) return false
+      if (!withinRange(traceEventTime, filters.startTime, filters.endTime)) return false
       if (filters.status && traceStatus !== filters.status) return false
       if (filters.attribution && traceAttribution !== filters.attribution) return false
       if (filters.includeQuit === false && traceStatus === 'quit') return false
       return true
     })
-    .sort((a, b) => timeValue(b.invite_time || b.exit_time || b.created_time) - timeValue(a.invite_time || a.exit_time || a.created_time))
+    .sort((a, b) => timeValue(eventTime(b)) - timeValue(eventTime(a)))
     .map(toMemberTraceRow)
 
   return { rows, total: rows.length, groups }
@@ -161,15 +202,83 @@ export async function getMemberTraceExportRows(filters: TraceFilters) {
   ])
 }
 
+export async function getGroupSummaryExportRows(filters: GroupReleaseFilters) {
+  const dashboard = await getDashboard({ tagId: filters.tagId })
+  const memberTotal = filters.includeQuit ? dashboard.cards.totalMembersWithQuit : dashboard.cards.totalMembers
+  const scopeLabel = filters.tagId === ALL_ACTIVITY_TAG_ID ? '全部活动' : '当前活动'
+
+  return [[
+    scopeLabel,
+    dashboard.cards.monitoredGroups,
+    memberTotal,
+    filters.includeQuit ? '包含已退群的人' : '仅有效入群人数'
+  ]]
+}
+
+export async function getGroupListExportRows(filters: GroupReleaseFilters) {
+  const dashboard = await getDashboard({ tagId: filters.tagId })
+  const counts = new Map(dashboard.groupRanking.map(row => [row.groupId, row.count]))
+
+  return dashboard.groups.map(group => [
+    group.name,
+    group.id,
+    counts.get(group.id) || 0
+  ])
+}
+
+export async function getGroupMemberExportRows(filters: GroupMemberExportFilters) {
+  const events = await loadFinalEvents(filters.tagId)
+  return buildGroupMemberCsvRows(events, filters.groupId)
+}
+
+export async function getBatchGroupMemberExportFiles(filters: GroupReleaseFilters) {
+  const [events, groupBindings] = await Promise.all([
+    loadFinalEvents(filters.tagId),
+    loadGroupBindings(filters.tagId)
+  ])
+  const groups = buildGroupsFromBindings(groupBindings)
+  const groupedEvents = new Map<string, FinalStatEvent[]>()
+
+  events
+    .filter(isConfirmedStatEvent)
+    .forEach(row => {
+      const groupId = String(row.group_id || row.group_name || '')
+      if (!groupId) return
+      const current = groupedEvents.get(groupId) || []
+      current.push(row)
+      groupedEvents.set(groupId, current)
+    })
+
+  return groups.map(group => ({
+    filename: `${sanitizeFilename(group.name)}.csv`,
+    content: csvText(
+      ['时间', '邀请人', '被邀请人', '状态'],
+      buildGroupMemberCsvRows(groupedEvents.get(group.id) || [], group.id)
+    )
+  }))
+}
+
 async function loadFinalEvents(tagId?: string) {
   const query: Record<string, string | number> = {
     select: '*',
     limit: 10000
   }
 
-  if (tagId) query.activity_tag_id = `eq.${tagId}`
+  if (tagId && tagId !== ALL_ACTIVITY_TAG_ID) query.activity_tag_id = `eq.${tagId}`
 
   return supabaseSelect<FinalStatEvent>('final_stat_events', query)
+}
+
+async function loadGroupBindings(tagId?: string) {
+  const query: Record<string, string | number> = {
+    select: 'group_id,group_name,activity_tag_id,enabled,member_count,raw_json',
+    enabled: 'eq.true',
+    limit: 10000
+  }
+
+  if (tagId && tagId !== ALL_ACTIVITY_TAG_ID) query.activity_tag_id = `eq.${tagId}`
+
+  return supabaseSelect<GroupTagBinding>('group_tag_bindings', query)
 }
 
 function isConfirmedStatEvent(row: FinalStatEvent) {
@@ -189,15 +298,26 @@ function isEffectiveInviteEvent(row: FinalStatEvent) {
 }
 
 function isVisibleForTrace(row: FinalStatEvent) {
-  return row.status !== 'ignored'
+  return row.status !== 'deleted'
 }
 
-function buildGroups(events: FinalStatEvent[]): GroupOption[] {
+function buildGroupsFromEvents(events: FinalStatEvent[]): GroupOption[] {
   const groups = new Map<string, GroupOption>()
   events.forEach(row => {
     const id = String(row.group_id || row.group_name || '')
     if (!id) return
-    groups.set(id, { id, name: groupName(row) })
+    const current = groups.get(id)
+    groups.set(id, { id, name: groupName(row), avatarUrl: current?.avatarUrl || '' })
+  })
+  return Array.from(groups.values()).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
+}
+
+function buildGroupsFromBindings(bindings: GroupTagBinding[]): GroupOption[] {
+  const groups = new Map<string, GroupOption>()
+  bindings.forEach(row => {
+    const id = String(row.group_id || row.group_name || '')
+    if (!id) return
+    groups.set(id, { id, name: bindingGroupName(row), avatarUrl: groupAvatarUrl(row) })
   })
   return Array.from(groups.values()).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
 }
@@ -212,33 +332,33 @@ function buildHourlyDistribution(events: FinalStatEvent[]) {
 }
 
 function buildInviteRanking(events: FinalStatEvent[]): InviteRankingRow[] {
-  const ranking = new Map<string, { inviterId: string; inviterName: string; members: Set<string> }>()
+  const ranking = new Map<string, { inviterId: string; inviterName: string; count: number; groups: Set<string>; recent: number }>()
   events.forEach(row => {
     const name = inviterName(row)
-    if (!name || name === '未知来源') return
-    const id = String(row.inviter_wx_id || name)
-    const current = ranking.get(id) || { inviterId: id, inviterName: name, members: new Set<string>() }
-    const key = memberKey(row)
-    if (key) current.members.add(key)
+    const id = String(row.inviter_wx_id || row.inviter_name || name || 'unknown')
+    const current = ranking.get(id) || { inviterId: id, inviterName: name || id, count: 0, groups: new Set<string>(), recent: 0 }
+    current.count += 1
+    current.groups.add(String(row.group_id || ''))
+    current.recent = Math.max(current.recent, timeValue(row.invite_time))
     ranking.set(id, current)
   })
   return Array.from(ranking.values())
-    .map(row => ({ inviterId: row.inviterId, inviterName: row.inviterName, count: row.members.size }))
+    .map(row => ({ inviterId: row.inviterId, inviterName: row.inviterName, count: row.count }))
     .sort((a, b) => b.count - a.count)
 }
 
-function buildGroupRanking(events: FinalStatEvent[]) {
-  const groups = new Map<string, Set<string>>()
-  const names = new Map<string, string>()
-  events.forEach(row => {
+function buildGroupRanking(bindings: GroupTagBinding[]) {
+  const groups = new Map<string, { groupName: string; count: number }>()
+  bindings.forEach(row => {
     const id = String(row.group_id || row.group_name || '')
     if (!id) return
-    if (!groups.has(id)) groups.set(id, new Set())
-    groups.get(id)?.add(memberKey(row))
-    names.set(id, groupName(row))
+    groups.set(id, {
+      groupName: bindingGroupName(row),
+      count: normalizeCount(row.member_count)
+    })
   })
   return Array.from(groups.entries())
-    .map(([groupId, members]) => ({ groupId, groupName: names.get(groupId) || groupId, count: members.size }))
+    .map(([groupId, group]) => ({ groupId, groupName: group.groupName, count: group.count }))
     .sort((a, b) => b.count - a.count)
 }
 
@@ -272,6 +392,14 @@ function groupName(row: FinalStatEvent) {
   return String(row.group_name || row.group_id || '未知群')
 }
 
+function bindingGroupName(row: GroupTagBinding) {
+  return String(row.group_name || row.group_id || '未知群')
+}
+
+function normalizeCount(value: unknown) {
+  return Math.max(0, Math.floor(Number(value || 0)))
+}
+
 function toMemberTraceRow(row: FinalStatEvent): MemberTraceRow {
   const status = toTraceStatus(row)
   const attribution = toTraceAttribution(row)
@@ -281,6 +409,7 @@ function toMemberTraceRow(row: FinalStatEvent): MemberTraceRow {
   return {
     id: String(row.event_id || row.id || `${row.group_id || ''}-${memberKey(row)}-${eventTime(row) || ''}`),
     memberName: memberName(row),
+    avatarUrl: memberAvatarUrl(row),
     wxid: String(row.wx_id || row.wxid || ''),
     source: `${sourcePrefix} · ${sourceName}`,
     groupId: String(row.group_id || ''),
@@ -294,12 +423,14 @@ function toMemberTraceRow(row: FinalStatEvent): MemberTraceRow {
 
 function toTraceStatus(row: FinalStatEvent): TraceStatus {
   if (row.status === 'pending') return 'pending'
-  if (row.delete_flag === 1 || isQuitEvent(row) || row.exit_time) return 'quit'
+  if (row.status !== 'ignored' && (row.delete_flag === 1 || isQuitEvent(row) || row.exit_time)) return 'quit'
   return 'active'
 }
 
 function toTraceAttribution(row: FinalStatEvent): TraceAttribution {
   if (row.status === 'pending') return 'pending'
+  if (row.status === 'ignored') return 'invalid'
+  if (!isInviteEvent(row)) return 'none'
   if (row.valid_flag === -1) return 'invalid'
   return 'valid'
 }
@@ -320,7 +451,44 @@ function isToday(value?: string | null) {
 }
 
 function eventTime(row: FinalStatEvent) {
+  if (isInviteEvent(row) && row.delete_flag === 1) {
+    return row.updated_at || row.exit_time || row.invite_time || row.created_time || null
+  }
   return row.invite_time || row.exit_time || row.created_time || null
+}
+
+function memberAvatarUrl(row: FinalStatEvent) {
+  const rawJson = rawJsonRecord(row.raw_json)
+  return String(
+    row.head_img ||
+    row.avatar_url ||
+    rawJson?.head_img ||
+    rawJson?.avatar_url ||
+    rawJson?.avatarUrl ||
+    ''
+  ).trim()
+}
+
+function groupAvatarUrl(row: GroupTagBinding) {
+  const rawJson = rawJsonRecord(row.raw_json)
+  return String(
+    rawJson?.avatar_url ||
+    rawJson?.avatarUrl ||
+    rawJson?.head_img ||
+    ''
+  ).trim()
+}
+
+function rawJsonRecord(value: unknown): AnyRecord | null {
+  if (!value) return null
+  if (typeof value === 'object' && !Array.isArray(value)) return value as AnyRecord
+  if (typeof value !== 'string') return null
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as AnyRecord : null
+  } catch {
+    return null
+  }
 }
 
 function joinTypeText(row: FinalStatEvent) {
@@ -368,5 +536,38 @@ function statusText(status: TraceStatus) {
 function attributionText(attribution: TraceAttribution) {
   if (attribution === 'invalid') return '无效'
   if (attribution === 'pending') return '待确认'
+  if (attribution === 'none') return '-'
   return '有效'
+}
+
+function buildGroupMemberCsvRows(events: FinalStatEvent[], groupId: string) {
+  return events
+    .filter(row => String(row.group_id || row.group_name || '') === groupId)
+    .filter(isConfirmedStatEvent)
+    .sort((a, b) => timeValue(b.invite_time || b.exit_time || b.created_time) - timeValue(a.invite_time || a.exit_time || a.created_time))
+    .map(row => [
+      formatDateTime(row.invite_time || row.exit_time || row.created_time),
+      groupMemberSourceName(row),
+      memberName(row),
+      groupMemberStatusText(row)
+    ])
+}
+
+function groupMemberSourceName(row: FinalStatEvent) {
+  if (isQuitEvent(row)) return operatorName(row)
+  return inviterName(row)
+}
+
+function groupMemberStatusText(row: FinalStatEvent) {
+  if (isQuitEvent(row)) return quitTypeText(row.quit_type)
+  if (row.join_type === 'qrcode') return '扫码入群'
+  if (row.join_type === 'direct') return '直接入群'
+  return '邀请入群'
+}
+
+function sanitizeFilename(value: string) {
+  return value
+    .replace(/[\\/:*?"<>|]+/g, '-')
+    .replace(/[\u0000-\u001f]/g, '')
+    .trim() || 'download'
 }
