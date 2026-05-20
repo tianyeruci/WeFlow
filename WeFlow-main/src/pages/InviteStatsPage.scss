@@ -391,13 +391,21 @@
   }
 }
 
+.invite-metric-card.amber {
+  grid-template-columns: 54px minmax(0, 1fr) auto;
+
+  > div:nth-child(2) {
+    min-width: 0;
+  }
+}
+
 .invite-metric-toggles {
-  position: absolute;
-  right: 14px;
-  bottom: 12px;
+  position: static;
   display: grid;
+  align-self: center;
   justify-items: end;
   gap: 6px;
+  padding-left: 8px;
 }
 
 .invite-metric-toggle {
@@ -502,6 +510,104 @@
     min-width: 0;
     min-height: 34px;
   }
+}
+
+.invite-pie-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: center;
+  padding: 4px 0 2px;
+}
+
+.invite-pie-figure {
+  display: grid;
+  place-items: center;
+}
+
+.invite-pie-chart {
+  position: relative;
+  width: min(100%, 280px);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.88), 0 10px 24px rgba(60, 76, 110, 0.10);
+}
+
+.invite-pie-hole {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  display: grid;
+  place-items: center;
+  width: 42%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 4px 14px rgba(72, 87, 121, 0.08);
+  transform: translate(-50%, -50%);
+
+  strong {
+    display: block;
+    color: var(--invite-ink);
+    font-size: 25px;
+    font-weight: 950;
+  }
+
+  span {
+    margin-top: 2px;
+    color: var(--invite-muted);
+    font-size: 12px;
+    font-weight: 800;
+  }
+}
+
+.invite-pie-legend {
+  display: grid;
+  gap: 8px;
+  max-height: 330px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.invite-pie-legend-item {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 32px;
+  color: var(--invite-ink);
+  font-size: 13px;
+  font-weight: 900;
+
+  strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font: inherit;
+  }
+
+  em,
+  i {
+    color: var(--invite-muted);
+    font-style: normal;
+    font-size: 12px;
+    font-weight: 800;
+    white-space: nowrap;
+  }
+}
+
+.invite-pie-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.invite-pie-empty {
+  display: grid;
+  place-items: center;
+  min-height: 390px;
+  color: var(--invite-muted);
+  font-size: 13px;
+  font-weight: 800;
 }
 
 .invite-compact-range {
