@@ -340,7 +340,7 @@ const ALL_ACTIVITY_TAG_ID = '__all__'
 class InviteStatsService {
   private readonly fileVersion = 1
   private readonly maxScanLogsPerScope = 80
-  private readonly autoScanIntervalMs = 3 * 60 * 1000
+  private readonly autoScanIntervalMs = 30 * 1000
   private configService: ConfigService
   private filePath: string | null = null
   private loaded = false
@@ -2536,7 +2536,7 @@ class InviteStatsService {
     this.autoScanStarted = true
     const firstScanTimer = setTimeout(() => {
       void this.runBackgroundScan()
-    }, 15_000)
+    }, 3 * 60 * 1000)
     if (typeof firstScanTimer.unref === 'function') firstScanTimer.unref()
     this.autoScanTimer = setInterval(() => {
       void this.runBackgroundScan()
@@ -2560,7 +2560,7 @@ class InviteStatsService {
         await this.runBackgroundQuitCheck()
         firstRun = false
         if (this.autoQuitCheckStarted) scheduleNext()
-      }, firstRun ? 60 * 1000 : 60 * 60 * 1000)
+      }, firstRun ? 5 * 60 * 1000 : 60 * 60 * 1000)
       if (typeof timer.unref === 'function') timer.unref()
       this.autoQuitCheckTimer = timer
     }

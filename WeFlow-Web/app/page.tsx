@@ -251,7 +251,14 @@ export default function RemoteViewerPage() {
     try {
       const payload = await apiGet<{ tags: ActivityTag[] }>('/api/invite/tags')
       setTags(payload.tags)
-      setSelectedTagId(current => current || ALL_ACTIVITY_TAG_ID)
+      const defaultTag = payload.tags.find(tag => tag.name === '拉新')
+      setSelectedTagId(current => {
+        if (current && current !== ALL_ACTIVITY_TAG_ID) {
+          const stillExists = payload.tags.some(tag => tag.id === current)
+          if (stillExists) return current
+        }
+        return defaultTag?.id || ALL_ACTIVITY_TAG_ID
+      })
     } catch (err) {
       setError(errorMessage(err))
     } finally {
@@ -547,7 +554,7 @@ export default function RemoteViewerPage() {
                   disabled={isRequestingLatestData || refreshCooldownRemaining > 0}
                   onClick={() => void requestLatestData()}
                 >
-                  <span>{isRequestingLatestData ? '请求中...' : '刷新最新数据'}</span>
+                  <span>{isRequestingLatestData ? '请求中...' : '刷新数据'}</span>
                   {refreshCooldownRemaining > 0 && <em>{refreshCooldownRemaining}s</em>}
                 </button>
               </div>
