@@ -484,7 +484,7 @@ export default function RemoteViewerPage() {
   const safeGroupRankPage = Math.min(groupRankPage, groupRankPageCount)
   const groupRankStart = (safeGroupRankPage - 1) * GROUP_RANK_PAGE_SIZE
   const groupRankRows = dashboard.groupRanking.slice(groupRankStart, groupRankStart + GROUP_RANK_PAGE_SIZE)
-  const groupMax = Math.max(...dashboard.groupRanking.map(row => row.count), 1)
+  const groupMax = Math.max(500, ...dashboard.groupRanking.map(row => row.count))
   const chartPoints = buildLinePoints(dashboard.hourlyDistribution)
   const groupRows = useMemo(() => {
     const counts = new Map(dashboard.groupRanking.map(row => [row.groupId, row.count]))
@@ -606,7 +606,7 @@ export default function RemoteViewerPage() {
                             <div className={`rank-no rank-${groupRankStart + index + 1}`}>{groupRankStart + index + 1}</div>
                             <div>
                               <div className="group-name">{row.groupName}</div>
-                              <div className="bar-track"><div className="bar-fill" style={{ width: `${Math.max(4, row.count / groupMax * 100)}%` }} /></div>
+                              <div className="bar-track"><div className="bar-fill" style={{ width: `${row.count <= 0 ? 0 : Math.max(2, row.count / groupMax * 100)}%` }} /></div>
                             </div>
                             <div className="group-count">{formatNumber(row.count)} 人</div>
                           </div>
@@ -629,7 +629,7 @@ export default function RemoteViewerPage() {
                     <div className="panel-title">
                       <div>
                         <h2>邀请人数排行榜</h2>
-                        <p>【{selectedScopeLabel}】招募者 {dashboard.inviteRanking.length} 名，有效入群人数 {formatNumber(memberTotal)}</p>
+                        <p>【{selectedScopeLabel}】招募者 {dashboard.inviteRanking.length} 名，入群人数 {formatNumber(memberTotal)}</p>
                       </div>
                       <div className="panel-actions">
                         <button className={`icon-btn ${chartMode === 'bar' ? 'active' : ''}`} title="柱状图" onClick={() => setChartMode('bar')}>▥</button>
@@ -648,7 +648,7 @@ export default function RemoteViewerPage() {
                         <input type="datetime-local" step="1" aria-label="排行榜结束时间" value={rankingEnd} onChange={event => setRankingEnd(event.target.value)} />
                       </div>
                       <button onClick={() => void exportCsv('ranking')}>导出</button>
-                      <button onClick={exportInviteRankingImage}>下载图片</button>
+                      <button className="ranking-download-image-btn" onClick={exportInviteRankingImage}>下载图片</button>
                     </div>
                     {chartMode === 'bar' ? (
                       <div className="bar-chart">

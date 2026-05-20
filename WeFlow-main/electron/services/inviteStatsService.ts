@@ -2090,7 +2090,7 @@ class InviteStatsService {
       addMember(todayQuitByGroupId, event.group_id, this.getMemberKey(event))
     }
 
-    return groups.map((group) => {
+    const rows = groups.map((group) => {
       const binding = bindingByGroupId.get(group.username)
       const tag = binding?.tag_id ? tagById.get(binding.tag_id) : undefined
       return {
@@ -2108,6 +2108,26 @@ class InviteStatsService {
         binding_enabled: Boolean(binding?.enabled && binding.tag_id)
       }
     })
+    const listedGroupIds = new Set(groups.map((group) => group.username))
+    for (const binding of data.groupTagBindings) {
+      if (!binding.enabled || !binding.tag_id || listedGroupIds.has(binding.group_id)) continue
+      const tag = tagById.get(binding.tag_id)
+      rows.push({
+        group_id: binding.group_id,
+        group_name: binding.group_name || binding.group_id,
+        avatar_url: binding.avatar_url,
+        member_count: this.normalizeMemberCount(binding.member_count),
+        today_join_count: todayJoinByGroupId.get(binding.group_id)?.size || 0,
+        today_quit_count: todayQuitByGroupId.get(binding.group_id)?.size || 0,
+        recent_invite_time: binding.last_invite_time || 0,
+        last_scan_time: binding.last_scan_time || 0,
+        tag_id: binding.tag_id,
+        tag_name: binding.tag_name,
+        tag_enabled: Boolean(tag?.enabled),
+        binding_enabled: true
+      })
+    }
+    return rows
   }
 
   async listGroups(): Promise<{ success: boolean; data?: InviteStatsGroupRow[]; error?: string }> {
@@ -2540,7 +2560,7 @@ class InviteStatsService {
         await this.runBackgroundQuitCheck()
         firstRun = false
         if (this.autoQuitCheckStarted) scheduleNext()
-      }, firstRun ? 60 * 1000 : 30 * 60 * 1000)
+      }, firstRun ? 60 * 1000 : 60 * 60 * 1000)
       if (typeof timer.unref === 'function') timer.unref()
       this.autoQuitCheckTimer = timer
     }
