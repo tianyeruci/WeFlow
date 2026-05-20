@@ -112,6 +112,69 @@ function ellipsizeCanvasText(ctx: CanvasRenderingContext2D, text: string, maxWid
   return `${next}...`
 }
 
+type RankingPieItem = {
+  name: string
+  count: number
+  color: string
+  percent: number
+}
+
+function buildRankingPieItems(rows: Array<{ name: string; count: number }>): RankingPieItem[] {
+  const filtered = rows.filter((row) => Number(row.count || 0) > 0)
+  const total = filtered.reduce((sum, row) => sum + Number(row.count || 0), 0)
+  if (!total) return []
+  return filtered.map((row, index) => ({
+    name: row.name,
+    count: Number(row.count || 0),
+    color: rankingImageColors[index % rankingImageColors.length],
+    percent: Number(((Number(row.count || 0) / total) * 100).toFixed(1))
+  }))
+}
+
+function InviteRankingPieChart(props: { rows: Array<{ name: string; count: number }> }) {
+  const items = useMemo(() => buildRankingPieItems(props.rows), [props.rows])
+  const total = useMemo(() => items.reduce((sum, item) => sum + item.count, 0), [items])
+  const conicGradient = useMemo(() => {
+    if (!items.length) return ''
+    let angle = 0
+    return items
+      .map((item) => {
+        const nextAngle = angle + (item.count / total) * 360
+        const segment = `${item.color} ${angle.toFixed(2)}deg ${nextAngle.toFixed(2)}deg`
+        angle = nextAngle
+        return segment
+      })
+      .join(', ')
+  }, [items, total])
+
+  if (!items.length) {
+    return <div className="pie-empty">暂无占比数据</div>
+  }
+
+  return (
+    <div className="pie-layout" aria-label="邀请人数排行榜饼图">
+      <div className="pie-figure">
+        <div className="pie-chart" style={{ background: `conic-gradient(${conicGradient})` }}>
+          <div className="pie-hole">
+            <strong>{formatNumber(total)}</strong>
+            <span>总人数</span>
+          </div>
+        </div>
+      </div>
+      <div className="pie-legend">
+        {items.map((item, index) => (
+          <div className="pie-legend-item" key={`${item.name}-${item.count}-${index}`}>
+            <span className="pie-swatch" style={{ background: item.color }} />
+            <strong title={item.name}>{item.name}</strong>
+            <em>{formatNumber(item.count)} 人</em>
+            <i>{item.percent}%</i>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 const emptyDashboard: DashboardData = {
   cards: {
     activeRobots: 0,
@@ -421,7 +484,7 @@ export default function RemoteViewerPage() {
   const safeGroupRankPage = Math.min(groupRankPage, groupRankPageCount)
   const groupRankStart = (safeGroupRankPage - 1) * GROUP_RANK_PAGE_SIZE
   const groupRankRows = dashboard.groupRanking.slice(groupRankStart, groupRankStart + GROUP_RANK_PAGE_SIZE)
-  const groupMax = Math.max(...groupRankRows.map(row => row.count), 1)
+  const groupMax = Math.max(...dashboard.groupRanking.map(row => row.count), 1)
   const chartPoints = buildLinePoints(dashboard.hourlyDistribution)
   const groupRows = useMemo(() => {
     const counts = new Map(dashboard.groupRanking.map(row => [row.groupId, row.count]))
@@ -599,16 +662,12 @@ export default function RemoteViewerPage() {
                         {dashboard.inviteRanking.length === 0 && <EmptyState text="暂无排行榜数据" />}
                       </div>
                     ) : (
-                      <div className="pie-list">
-                        {dashboard.inviteRanking.slice(0, 8).map((row, index) => (
-                          <div className="pie-row" key={row.inviterId}>
-                            <span style={{ background: barColor(index) }} />
-                            <strong>{row.inviterName}</strong>
-                            <em>{Math.round(row.count / rankingMax * 100)}%</em>
-                          </div>
-                        ))}
-                        {dashboard.inviteRanking.length === 0 && <EmptyState text="暂无占比数据" />}
-                      </div>
+                      <InviteRankingPieChart
+                        rows={dashboard.inviteRanking.map((row) => ({
+                          name: row.inviterName || row.inviterId || '未知来源',
+                          count: Number(row.count || 0)
+                        }))}
+                      />
                     )}
                   </section>
 

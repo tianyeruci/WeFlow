@@ -41,6 +41,7 @@ type GroupSortKey = 'member_count' | 'today_join_count' | 'today_quit_count' | '
 type ManualInviteMode = 'confirm' | 'add'
 const ALL_ACTIVITY_TAG_ID = '__all__'
 const GROUP_RANK_PAGE_SIZE = 10
+const RESET_CONFIRM_TEXT = '恢复初始化'
 
 type ManualInviteFormState = {
   groupId: string
@@ -279,6 +280,69 @@ function ellipsizeCanvasText(ctx: CanvasRenderingContext2D, text: string, maxWid
     next = next.slice(0, -1)
   }
   return `${next}...`
+}
+
+type RankingPieItem = {
+  name: string
+  count: number
+  color: string
+  percent: number
+}
+
+function buildRankingPieItems(rows: Array<{ name: string; count: number }>): RankingPieItem[] {
+  const filtered = rows.filter((row) => Number(row.count || 0) > 0)
+  const total = filtered.reduce((sum, row) => sum + Number(row.count || 0), 0)
+  if (!total) return []
+  return filtered.map((row, index) => ({
+    name: row.name,
+    count: Number(row.count || 0),
+    color: rankingImageColors[index % rankingImageColors.length],
+    percent: Number(((Number(row.count || 0) / total) * 100).toFixed(1))
+  }))
+}
+
+function InviteRankingPieChart(props: { rows: Array<{ name: string; count: number }> }) {
+  const items = useMemo(() => buildRankingPieItems(props.rows), [props.rows])
+  const total = useMemo(() => items.reduce((sum, item) => sum + item.count, 0), [items])
+  const conicGradient = useMemo(() => {
+    if (!items.length) return ''
+    let angle = 0
+    return items
+      .map((item) => {
+        const nextAngle = angle + (item.count / total) * 360
+        const segment = `${item.color} ${angle.toFixed(2)}deg ${nextAngle.toFixed(2)}deg`
+        angle = nextAngle
+        return segment
+      })
+      .join(', ')
+  }, [items, total])
+
+  if (!items.length) {
+    return <div className="invite-pie-empty">暂无占比数据</div>
+  }
+
+  return (
+    <div className="invite-pie-layout" aria-label="邀请人数排行榜饼图">
+      <div className="invite-pie-figure">
+        <div className="invite-pie-chart" style={{ background: `conic-gradient(${conicGradient})` }}>
+          <div className="invite-pie-hole">
+            <strong>{formatNumber(total)}</strong>
+            <span>总人数</span>
+          </div>
+        </div>
+      </div>
+      <div className="invite-pie-legend">
+        {items.map((item, index) => (
+          <div className="invite-pie-legend-item" key={`${item.name}-${item.count}-${index}`}>
+            <span className="invite-pie-swatch" style={{ background: item.color }} />
+            <strong title={item.name}>{item.name}</strong>
+            <em>{formatNumber(item.count)} 人</em>
+            <i>{item.percent}%</i>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 const formatCompactDateTime = (value: string): string => {
@@ -527,8 +591,8 @@ function InviteStatsPage() {
   }
 
   const resetInviteStatsData = async () => {
-    if (resetConfirmText !== 'RESET') {
-      showToast('请输入 RESET 后再恢复初始化')
+    if (resetConfirmText.trim() !== RESET_CONFIRM_TEXT) {
+      showToast(`请输入“${RESET_CONFIRM_TEXT}”后再恢复初始化`)
       return
     }
 
@@ -1052,19 +1116,6 @@ function InviteStatsPage() {
 
   const rankingOption = useMemo(() => {
     const rows = dashboard?.inviteRanking || []
-    if (chartMode === 'pie') {
-      return {
-        color: ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'],
-        tooltip: { trigger: 'item' },
-        series: [{
-          type: 'pie',
-          radius: ['46%', '72%'],
-          center: ['50%', '52%'],
-          label: { formatter: '{b}\n{c}' },
-          data: rows.map((row) => ({ name: row.inviter || '未知来源', value: row.invite_count }))
-        }]
-      }
-    }
     return {
       color: ['#10b981'],
       tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
@@ -1088,7 +1139,7 @@ function InviteStatsPage() {
         label: { show: true, position: 'right' }
       }]
     }
-  }, [chartMode, dashboard])
+  }, [dashboard])
 
   const cards = dashboard?.cards
   const latestLog = scanLogs[0]
@@ -1102,7 +1153,7 @@ function InviteStatsPage() {
   const safeGroupRankPage = Math.min(groupRankPage, groupRankPageCount)
   const groupRankStart = (safeGroupRankPage - 1) * GROUP_RANK_PAGE_SIZE
   const groupRankRows = groupRankingRows.slice(groupRankStart, groupRankStart + GROUP_RANK_PAGE_SIZE)
-  const maxGroupMemberCount = Math.max(1, ...groupRankRows.map((group) => Number(group.member_count || 0)))
+  const maxGroupMemberCount = Math.max(1, ...groupRankingRows.map((group) => Number(group.member_count || 0)))
   const canManageTags = activeView === 'groups'
   const manualSelectedGroupExists = tagGroups.some((group) => group.group_id === manualInviteForm.groupId)
 
@@ -1328,7 +1379,16 @@ function InviteStatsPage() {
                   ariaLabel="ranking time range"
                 />
               </div>
-              <ReactECharts option={rankingOption} style={{ height: 390 }} />
+              {chartMode === 'bar' ? (
+                <ReactECharts option={rankingOption} style={{ height: 390 }} />
+              ) : (
+                <InviteRankingPieChart
+                  rows={(dashboard?.inviteRanking || []).map((row) => ({
+                    name: row.inviter || row.inviter_wx_id || '未知来源',
+                    count: Number(row.invite_count || 0)
+                  }))}
+                />
+              )}
             </section>
 
             <aside className="invite-right-column">
@@ -1802,14 +1862,14 @@ function InviteStatsPage() {
                 <input
                   value={resetConfirmText}
                   onChange={(event) => setResetConfirmText(event.target.value)}
-                  placeholder="输入 RESET"
+                  placeholder={`输入 ${RESET_CONFIRM_TEXT}`}
                   disabled={isSavingRemoteSync || isRemoteSyncing || isResettingInviteStats}
                 />
                 <button
                   type="button"
                   className="invite-danger-btn"
                   onClick={() => void resetInviteStatsData()}
-                  disabled={isSavingRemoteSync || isRemoteSyncing || isResettingInviteStats || resetConfirmText !== 'RESET'}
+                  disabled={isSavingRemoteSync || isRemoteSyncing || isResettingInviteStats || resetConfirmText.trim() !== RESET_CONFIRM_TEXT}
                 >
                   {isResettingInviteStats ? <Loader2 size={16} className="spin" /> : <Trash2 size={16} />}
                   <span>恢复初始化</span>
