@@ -14,6 +14,10 @@
 - 新增内部接口 `GET /api/invite/sync-request/latest`，只查看最新待处理刷新请求，不改变请求状态。
 - 新增 Supabase 兼容 SQL：`supabase/raw_events_updated_at_compat_2026_05_22.sql`，包含 `raw_events` 完整结构、幂等补列、回填、索引、注释和 `service_role` 授权。
 
+## 后续修复
+
+- 修复水位改造时误把两处通用当前时间变量替换为 `event.updated_at` 的问题，避免 WeFlow-main 在打开页面或点击按钮时抛出 `ReferenceError: event is not defined`。
+
 ## 修改文件
 
 - `WeFlow-main/electron/services/inviteStatsService.ts`

@@ -728,6 +728,24 @@ function InviteStatsPage() {
     },
     [groups, selectedTagId]
   )
+  const rankingGroupOptions = useMemo(() => {
+    const map = new Map<string, { group_id: string; group_name: string }>()
+    for (const group of dashboard?.groupRanking || []) {
+      if (!group.group_id) continue
+      map.set(group.group_id, {
+        group_id: group.group_id,
+        group_name: group.group_name || group.group_id
+      })
+    }
+    for (const group of tagGroups) {
+      if (!group.group_id || map.has(group.group_id)) continue
+      map.set(group.group_id, {
+        group_id: group.group_id,
+        group_name: group.group_name || group.group_id
+      })
+    }
+    return Array.from(map.values())
+  }, [dashboard?.groupRanking, tagGroups])
 
   const loadPending = useCallback(async () => {
     const result = await window.electronAPI.inviteStats.listPending({ tagId: selectedTagId || undefined })
@@ -990,7 +1008,7 @@ function InviteStatsPage() {
       showToast('暂无排行榜数据可下载')
       return
     }
-    const selectedGroup = rankingGroupId ? tagGroups.find((group) => group.group_id === rankingGroupId) : undefined
+    const selectedGroup = rankingGroupId ? rankingGroupOptions.find((group) => group.group_id === rankingGroupId) : undefined
     const scopeLabel = selectedGroup?.group_name || '所有群'
     const total = rows.reduce((sum, row) => sum + row.count, 0)
     const ok = downloadRankingImage({
@@ -1097,12 +1115,13 @@ function InviteStatsPage() {
   }, [groupSearch, groupSort, groupUnitTagFilter, groups])
 
   useEffect(() => {
+    const rankingGroupIds = new Set(rankingGroupOptions.map((group) => group.group_id))
     const tagGroupIds = new Set(tagGroups.map((group) => group.group_id))
-    if (rankingGroupId && !tagGroupIds.has(rankingGroupId)) setRankingGroupId('')
+    if (rankingGroupId && !rankingGroupIds.has(rankingGroupId)) setRankingGroupId('')
     if (traceFilters.groupId && !tagGroupIds.has(traceFilters.groupId)) {
       setTraceFilters((prev) => ({ ...prev, groupId: undefined }))
     }
-  }, [rankingGroupId, tagGroups, traceFilters.groupId])
+  }, [rankingGroupId, rankingGroupOptions, tagGroups, traceFilters.groupId])
 
   useEffect(() => {
     setGroupUnitTagFilter(selectedTagId || '__all')
@@ -1417,7 +1436,7 @@ function InviteStatsPage() {
               <div className="invite-ranking-tools">
                 <select value={rankingGroupId} onChange={(event) => setRankingGroupId(event.target.value)}>
                   <option value="">{isAllActivitySelected ? '全部活动下全部群' : '当前活动下全部群'}</option>
-                  {tagGroups.map((group) => (
+                  {rankingGroupOptions.map((group) => (
                     <option key={group.group_id} value={group.group_id}>{group.group_name}</option>
                   ))}
                 </select>
