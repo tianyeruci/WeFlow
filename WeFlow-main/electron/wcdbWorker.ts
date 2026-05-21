@@ -2,9 +2,20 @@ import { parentPort, workerData } from 'worker_threads'
 import { WcdbCore } from './services/wcdbCore'
 
 const core = new WcdbCore()
+let operationQueue: Promise<void> = Promise.resolve()
+
+const enqueueOperation = (operation: () => Promise<void>) => {
+    operationQueue = operationQueue
+        .catch(() => undefined)
+        .then(operation)
+        .catch((error) => {
+            console.error('[wcdbWorker] operation queue error:', error)
+        })
+}
 
 if (parentPort) {
-    parentPort.on('message', async (msg) => {
+    parentPort.on('message', (msg) => {
+        enqueueOperation(async () => {
         const { id, type, payload } = msg
 
         try {
@@ -307,5 +318,6 @@ if (parentPort) {
         } catch (e) {
             parentPort!.postMessage({ id, error: String(e) })
         }
+        })
     })
 }
