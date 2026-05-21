@@ -1263,7 +1263,7 @@ class InviteStatsService {
 
   private hydrateEventIdentityBindings(data: InviteStatsScopeData): boolean {
     let changed = false
-    const now = event.updated_at || this.nowSeconds()
+    const now = this.nowSeconds()
     for (const event of data.inviteEvents) {
       if (!event.wx_id) {
         const wxId = this.findManualBinding(data, event.group_id, event.user)
@@ -1908,7 +1908,7 @@ class InviteStatsService {
 
   markCurrentScopeSyncResult(success: boolean, errorMessage = '', snapshot?: InviteSyncSnapshot): void {
     const data = this.getScope()
-    const now = event.updated_at || this.nowSeconds()
+    const now = this.nowSeconds()
     const markRows = <T extends { sync_status?: string; sync_error?: string; last_sync_at?: number; updated_at?: number; finished_at?: number; started_at?: number }>(
       rows: T[],
       bucket: keyof InviteSyncSnapshot,
