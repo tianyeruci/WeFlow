@@ -2261,7 +2261,7 @@ class InviteStatsService {
     }
     data.scanLogs.unshift(log)
     data.scanLogs = data.scanLogs.slice(0, this.maxScanLogsPerScope)
-    this.activeQuitCheckState = {
+    this.activeScanState = {
       tagId: tag.tag_id,
       tagName: tag.tag_name,
       scanMode: 'incremental',
@@ -2337,7 +2337,7 @@ class InviteStatsService {
       this.persist()
       return { success: false, log, error: String(error) }
     } finally {
-      this.activeQuitCheckState = null
+      this.activeScanState = null
     }
   }
 
@@ -2369,7 +2369,7 @@ class InviteStatsService {
     }
     data.scanLogs.unshift(log)
     data.scanLogs = data.scanLogs.slice(0, this.maxScanLogsPerScope)
-    this.activeScanState = {
+    this.activeQuitCheckState = {
       tagId: tag.tag_id,
       tagName: tag.tag_name,
       scanMode: 'quit-check',
@@ -2423,7 +2423,7 @@ class InviteStatsService {
       this.persist()
       return { success: false, log, error: String(error) }
     } finally {
-      this.activeScanState = null
+      this.activeQuitCheckState = null
     }
   }
 
