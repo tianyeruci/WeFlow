@@ -19,6 +19,28 @@ export async function supabaseSelect<T>(table: string, query: Record<string, Que
   return requestSupabase<T[]>('GET', table, query)
 }
 
+export async function supabaseSelectAll<T>(
+  table: string,
+  query: Record<string, QueryValue> = {},
+  pageSize = 1000
+) {
+  const rows: T[] = []
+  let offset = 0
+
+  while (true) {
+    const page = await requestSupabase<T[]>('GET', table, {
+      ...query,
+      limit: pageSize,
+      offset
+    })
+    rows.push(...(page || []))
+    if (!page || page.length < pageSize) break
+    offset += pageSize
+  }
+
+  return rows
+}
+
 export async function supabaseUpsert<T extends Record<string, unknown>>(
   table: string,
   rows: T[],
