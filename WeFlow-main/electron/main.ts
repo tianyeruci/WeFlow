@@ -71,11 +71,31 @@ let configService: ConfigService | null = null
 const activeExportWorkers = new Map<string, Worker>()
 const activeExportTasks = new Set<string>()
 const isExportBusy = () => activeExportTasks.size > 0
+const EXPORT_WCDB_IDLE_WAIT_MS = 30_000
 
 inviteStatsService.setBackgroundTaskBlocker(isExportBusy)
 inviteStatsSyncService.setSyncTaskBlocker(isExportBusy)
 
 const normalizeExportTaskId = (taskId: unknown): string => String(taskId || '').trim()
+const markExportBusy = (taskId?: string): string => {
+  const busyId = normalizeExportTaskId(taskId) || `export:${randomUUID()}`
+  activeExportTasks.add(busyId)
+  return busyId
+}
+const clearExportBusy = (busyId: string): void => {
+  if (busyId) activeExportTasks.delete(busyId)
+}
+const waitForInviteStatsWcdbIdle = async (): Promise<{ success: boolean; error?: string }> => {
+  const [scanIdle, syncIdle] = await Promise.all([
+    inviteStatsService.waitForBackgroundTasksIdle(EXPORT_WCDB_IDLE_WAIT_MS),
+    inviteStatsSyncService.waitForSyncIdle(EXPORT_WCDB_IDLE_WAIT_MS)
+  ])
+  if (scanIdle && syncIdle) return { success: true }
+  return {
+    success: false,
+    error: '邀请统计后台任务仍在运行，导出暂未启动，请稍后重试'
+  }
+}
 
 const postExportWorkerControl = (taskId: string, action: 'pause' | 'resume' | 'cancel') => {
   const worker = activeExportWorkers.get(taskId)
@@ -2777,9 +2797,11 @@ function registerIpcHandlers() {
     const taskId = normalizeExportTaskId(exportOptions.taskId)
     delete exportOptions.taskId
     const taskControl = taskId ? exportTaskControlService.createControl(taskId, String(exportOptions.outputDir || '')) : undefined
-    if (taskId) activeExportTasks.add(taskId)
+    const exportBusyId = markExportBusy(taskId)
 
     try {
+      const idle = await waitForInviteStatsWcdbIdle()
+      if (!idle.success) return { success: false, error: idle.error }
       const result = await snsService.exportTimeline(
         exportOptions,
         (progress) => {
@@ -2791,7 +2813,7 @@ function registerIpcHandlers() {
       )
       return finalizeExportTaskControlResult(taskId, result)
     } finally {
-      if (taskId) activeExportTasks.delete(taskId)
+      clearExportBusy(exportBusyId)
     }
   })
 
@@ -3148,7 +3170,7 @@ function registerIpcHandlers() {
   ipcMain.handle('export:exportSessions', async (event, sessionIds: string[], outputDir: string, options: ExportOptions, controlOptions?: { taskId?: string }) => {
     const taskId = normalizeExportTaskId(controlOptions?.taskId)
     if (taskId) exportTaskControlService.createControl(taskId, outputDir)
-    if (taskId) activeExportTasks.add(taskId)
+    const exportBusyId = markExportBusy(taskId)
     const PROGRESS_FORWARD_INTERVAL_MS = 180
     let pendingProgress: ExportProgress | null = null
     let progressTimer: NodeJS.Timeout | null = null
@@ -3301,6 +3323,22 @@ function registerIpcHandlers() {
     }
 
     try {
+      const idle = await waitForInviteStatsWcdbIdle()
+      if (!idle.success) {
+        const normalizedSessionIds = Array.isArray(sessionIds) ? sessionIds : []
+        const failedSessionErrors: Record<string, string> = {}
+        for (const sessionId of normalizedSessionIds) {
+          failedSessionErrors[sessionId] = idle.error || '导出暂未启动'
+        }
+        return await finalizeExportTaskControlResult(taskId, {
+          success: false,
+          successCount: 0,
+          failCount: normalizedSessionIds.length,
+          failedSessionIds: normalizedSessionIds,
+          failedSessionErrors,
+          error: idle.error || '导出暂未启动'
+        })
+      }
       const result = await runWorker()
       return await finalizeExportTaskControlResult(taskId, result)
     } catch (error) {
@@ -3321,7 +3359,7 @@ function registerIpcHandlers() {
       }
       return await finalizeExportTaskControlResult(taskId, result)
     } finally {
-      if (taskId) activeExportTasks.delete(taskId)
+      clearExportBusy(exportBusyId)
       flushProgress()
       if (progressTimer) {
         clearTimeout(progressTimer)
@@ -3335,8 +3373,11 @@ function registerIpcHandlers() {
     configService = cfg
     const imageKeys = cfg.getImageKeysForCurrentWxid()
     const workerPath = join(__dirname, 'exportWorker.js')
+    const exportBusyId = markExportBusy()
 
     try {
+      const idle = await waitForInviteStatsWcdbIdle()
+      if (!idle.success) return { success: false, error: idle.error }
       return await new Promise<any>((resolve) => {
         const worker = new Worker(workerPath, {
           workerData: {
@@ -3398,6 +3439,8 @@ function registerIpcHandlers() {
       const errorMessage = error instanceof Error ? error.message : String(error)
       console.error(`[export-worker-single] ${errorMessage}`)
       return { success: false, error: `导出 Worker 启动失败: ${errorMessage}` }
+    } finally {
+      clearExportBusy(exportBusyId)
     }
   })
 
@@ -3405,8 +3448,11 @@ function registerIpcHandlers() {
     const cfg = configService || new ConfigService()
     configService = cfg
     const workerPath = join(__dirname, 'exportWorker.js')
+    const exportBusyId = markExportBusy()
 
     try {
+      const idle = await waitForInviteStatsWcdbIdle()
+      if (!idle.success) return { success: false, error: idle.error }
       return await new Promise<any>((resolve) => {
         const worker = new Worker(workerPath, {
           workerData: {
@@ -3459,6 +3505,8 @@ function registerIpcHandlers() {
       const errorMessage = error instanceof Error ? error.message : String(error)
       console.error(`[export-worker-contacts] ${errorMessage}`)
       return { success: false, error: `导出 Worker 启动失败: ${errorMessage}` }
+    } finally {
+      clearExportBusy(exportBusyId)
     }
   })
 
