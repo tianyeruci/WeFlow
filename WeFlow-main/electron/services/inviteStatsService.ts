@@ -596,7 +596,7 @@ class InviteStatsService {
       }]
     }
 
-    const invite = /^["']?(.+?)["']?邀请["']?(.+?)["']?加入(?:了)?群聊$/.exec(normalized)
+    const invite = /^["']*(.+?)["']*邀请["']*(.+?)["']*加入(?:了)?群聊$/.exec(normalized)
     if (invite) {
       const inviter = normalizeText(invite[1])
       const users = this.splitInvitedUsers(invite[2])
