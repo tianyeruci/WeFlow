@@ -34,6 +34,7 @@ class InviteStatsSyncService {
   private readonly autoSyncIntervalMs = 3 * 60 * 1000
   private readonly remoteRefreshIntervalMs = 5 * 1000
   private readonly remoteRefreshCooldownMs = 30 * 1000
+  private readonly remoteRefreshScanWaitMs = 10 * 1000
   private readonly maxBatchPayloadBytes = 900 * 1024
   private lastSuccessfulSyncAtMs = 0
   private syncTaskBlocker: (() => boolean) | null = null
@@ -100,7 +101,6 @@ class InviteStatsSyncService {
     }
     this.syncPromise = (async () => {
       try {
-        await inviteStatsService.ensureBackgroundScanComplete()
         const result = await this.syncCurrentScope(options)
         if (result.success && !result.skipped) {
           this.lastSuccessfulSyncAtMs = Date.now()
@@ -253,6 +253,7 @@ class InviteStatsSyncService {
       const requestId = Number(payload?.requestId || 0)
       if (!requestId) return
 
+      await inviteStatsService.ensureBackgroundScanComplete(this.remoteRefreshScanWaitMs)
       const result = await this.queueSync({ endpoint, token, full: true })
       await this.completeRemoteRefreshRequest(endpoint, token, requestId, result)
     } catch (error) {

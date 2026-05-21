@@ -270,8 +270,8 @@ export default function RemoteViewerPage() {
     const tagId = selectedTagId || ALL_ACTIVITY_TAG_ID
     const params = new URLSearchParams({ tagId })
     if (rankingGroupId) params.set('rankingGroupId', rankingGroupId)
-    if (rankingStart) params.set('rankingStart', rankingStart)
-    if (rankingEnd) params.set('rankingEnd', rankingEnd)
+    if (rankingStart) params.set('rankingStart', toAbsoluteDateTimeParam(rankingStart))
+    if (rankingEnd) params.set('rankingEnd', toAbsoluteDateTimeParam(rankingEnd))
 
     if (!silent) {
       setLoading(true)
@@ -397,8 +397,8 @@ export default function RemoteViewerPage() {
 
     if (type === 'ranking') {
       if (rankingGroupId) params.set('rankingGroupId', rankingGroupId)
-      if (rankingStart) params.set('rankingStart', rankingStart)
-      if (rankingEnd) params.set('rankingEnd', rankingEnd)
+      if (rankingStart) params.set('rankingStart', toAbsoluteDateTimeParam(rankingStart))
+      if (rankingEnd) params.set('rankingEnd', toAbsoluteDateTimeParam(rankingEnd))
     } else {
       endpoint = '/api/invite/export/member-trace'
       filename = '群成员溯源.csv'
@@ -429,7 +429,7 @@ export default function RemoteViewerPage() {
     const total = rows.reduce((sum, row) => sum + row.count, 0)
     const date = new Date().toISOString().slice(0, 10).replace(/-/g, '')
     const ok = downloadRankingImage({
-      title: `【${scopeLabel}】邀请人数排行榜（招募者 ${rows.length} 名，总人数 ${formatNumber(total)}）`,
+      title: `【${scopeLabel}】邀请人数排行榜（招募者 ${rows.length} 名，入群人数 ${formatNumber(total)}）`,
       filename: `${sanitizeDownloadFilename(`邀请人数排行榜-${selectedScopeFileLabel}-${scopeLabel}-${date}`)}.png`,
       rows
     })
@@ -486,6 +486,7 @@ export default function RemoteViewerPage() {
   }
 
   const memberTotal = includeQuitInTotal ? dashboard.cards.totalMembersWithQuit : dashboard.cards.totalMembers
+  const rankingInviteTotal = dashboard.inviteRanking.reduce((sum, row) => sum + Number(row.count || 0), 0)
   const rankingMax = Math.max(...dashboard.inviteRanking.map(row => row.count), 1)
   const groupRankPageCount = Math.max(1, Math.ceil(dashboard.groupRanking.length / GROUP_RANK_PAGE_SIZE))
   const safeGroupRankPage = Math.min(groupRankPage, groupRankPageCount)
@@ -636,7 +637,7 @@ export default function RemoteViewerPage() {
                     <div className="panel-title">
                       <div>
                         <h2>邀请人数排行榜</h2>
-                        <p>【{selectedScopeLabel}】招募者 {dashboard.inviteRanking.length} 名，入群人数 {formatNumber(memberTotal)}</p>
+                        <p>【{selectedScopeLabel}】招募者 {dashboard.inviteRanking.length} 名，入群人数 {formatNumber(rankingInviteTotal)}</p>
                       </div>
                       <div className="panel-actions">
                         <button className={`icon-btn ${chartMode === 'bar' ? 'active' : ''}`} title="柱状图" onClick={() => setChartMode('bar')}>▥</button>
@@ -930,6 +931,13 @@ function errorMessage(error: unknown) {
 
 function formatNumber(value: number) {
   return new Intl.NumberFormat('zh-CN').format(value || 0)
+}
+
+function toAbsoluteDateTimeParam(value: string) {
+  if (!value) return ''
+  const time = new Date(value).getTime()
+  if (Number.isNaN(time)) return ''
+  return new Date(time).toISOString()
 }
 
 function formatDateTime(value: string | null) {
