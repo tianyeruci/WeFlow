@@ -30,10 +30,12 @@ class InviteStatsSyncService {
   private autoSyncStarted = false
   private remoteRefreshStarted = false
   private remoteRefreshPolling = false
-  private readonly autoSyncInitialDelayMs = 5 * 60 * 1000
-  private readonly autoSyncIntervalMs = 30 * 1000
+  private readonly autoSyncInitialDelayMs = 11 * 60 * 1000
+  private readonly autoSyncIntervalMs = 3 * 60 * 1000
   private readonly remoteRefreshIntervalMs = 5 * 1000
+  private readonly remoteRefreshCooldownMs = 30 * 1000
   private readonly maxBatchPayloadBytes = 900 * 1024
+  private lastSuccessfulSyncAtMs = 0
   private syncTaskBlocker: (() => boolean) | null = null
 
   setSyncTaskBlocker(blocker: (() => boolean) | null): void {
@@ -96,7 +98,18 @@ class InviteStatsSyncService {
     if (this.syncPromise || this.isSyncTaskBlocked()) {
       return Promise.resolve({ success: true, skipped: true })
     }
-    this.syncPromise = this.syncCurrentScope(options).finally(() => {
+    this.syncPromise = (async () => {
+      try {
+        await inviteStatsService.ensureBackgroundScanComplete()
+        const result = await this.syncCurrentScope(options)
+        if (result.success && !result.skipped) {
+          this.lastSuccessfulSyncAtMs = Date.now()
+        }
+        return result
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) }
+      }
+    })().finally(() => {
       this.syncPromise = null
     })
     return this.syncPromise
@@ -200,12 +213,29 @@ class InviteStatsSyncService {
   }
 
   private async pollRemoteRefreshRequest(): Promise<void> {
-    if (this.remoteRefreshPolling || this.isSyncTaskBlocked()) return
+    if (this.remoteRefreshPolling) return
     this.remoteRefreshPolling = true
     try {
       const endpoint = this.resolveEndpoint()
       const token = this.resolveToken()
       if (!endpoint || !token) return
+
+      const latestEndpoint = this.resolveSyncRequestEndpoint(endpoint, '/latest')
+      const latestResponse = await this.fetchWithRetry(latestEndpoint, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      }, 'Peek remote refresh request')
+      const latestPayload = await this.readResponse(latestResponse) as { requestId?: number | null; error?: string } | null
+      if (!latestResponse.ok) {
+        console.warn('[InviteStatsSync] Remote refresh peek failed:', latestPayload?.error || latestResponse.status)
+        return
+      }
+
+      const latestRequestId = Number(latestPayload?.requestId || 0)
+      if (!latestRequestId) return
+      if (this.syncPromise || this.isSyncTaskBlocked() || this.isRemoteRefreshCooldownActive()) return
 
       const nextEndpoint = this.resolveSyncRequestEndpoint(endpoint, '/next')
       const response = await this.fetchWithRetry(nextEndpoint, {
@@ -230,6 +260,11 @@ class InviteStatsSyncService {
     } finally {
       this.remoteRefreshPolling = false
     }
+  }
+
+  private isRemoteRefreshCooldownActive(): boolean {
+    return this.lastSuccessfulSyncAtMs > 0 &&
+      Date.now() - this.lastSuccessfulSyncAtMs < this.remoteRefreshCooldownMs
   }
 
   private async completeRemoteRefreshRequest(
@@ -314,7 +349,7 @@ class InviteStatsSyncService {
     return parts.filter(Boolean).join(' | ')
   }
 
-  private resolveSyncRequestEndpoint(endpoint: string, suffix: '/next' | '/complete') {
+  private resolveSyncRequestEndpoint(endpoint: string, suffix: '/next' | '/complete' | '/latest') {
     try {
       const url = new URL(endpoint)
       if (/\/api\/invite\/[^/]+\/?$/.test(url.pathname)) {

@@ -112,6 +112,28 @@ export async function claimLatestWebRefreshRequest() {
   }
 }
 
+export async function peekLatestWebRefreshRequest() {
+  await cleanupOldWebRefreshRequests()
+
+  const rows = await supabaseSelect<SyncBatchRow>('sync_batches', {
+    select: 'id,account_scope,source_client,status,started_at,finished_at,error_text',
+    source_client: `like.${REFRESH_SOURCE_PREFIX}%`,
+    status: 'eq.requested',
+    order: 'started_at.desc',
+    limit: 1
+  })
+
+  const latest = rows[0]
+  if (!latest) {
+    return { requestId: null as number | null }
+  }
+
+  return {
+    requestId: latest.id,
+    requestedAt: latest.started_at
+  }
+}
+
 export async function completeWebRefreshRequest(input: {
   requestId: number
   success: boolean
