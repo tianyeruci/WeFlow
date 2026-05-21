@@ -370,6 +370,7 @@ class InviteStatsService {
   private autoQuitCheckTimer: ReturnType<typeof setTimeout> | null = null
   private autoQuitCheckStarted = false
   private afterScanSuccess: (() => void | Promise<void>) | null = null
+  private backgroundTaskBlocker: (() => boolean) | null = null
 
   constructor() {
     this.configService = ConfigService.getInstance()
@@ -946,6 +947,14 @@ class InviteStatsService {
 
   setAfterScanSuccessCallback(callback: (() => void | Promise<void>) | null): void {
     this.afterScanSuccess = callback
+  }
+
+  setBackgroundTaskBlocker(blocker: (() => boolean) | null): void {
+    this.backgroundTaskBlocker = blocker
+  }
+
+  private isBackgroundTaskBlocked(): boolean {
+    return this.backgroundTaskBlocker?.() === true
   }
 
   private notifyAfterScanSuccess(): void {
@@ -2506,7 +2515,7 @@ class InviteStatsService {
   }
 
   async runBackgroundScan(): Promise<void> {
-    if (this.scanPromise) return
+    if (this.scanPromise || this.isBackgroundTaskBlocked()) return
     const data = this.getScope()
     const tagIds = data.activityTags
       .filter((tag) => tag.enabled && this.getEnabledBindingsForTag(data, tag.tag_id).length > 0)
@@ -2523,7 +2532,7 @@ class InviteStatsService {
   }
 
   async runBackgroundQuitCheck(): Promise<void> {
-    if (this.quitCheckPromise) return
+    if (this.quitCheckPromise || this.isBackgroundTaskBlocked()) return
     const data = this.getScope()
     const tagIds = data.activityTags
       .filter((tag) => tag.enabled && this.getEnabledBindingsForTag(data, tag.tag_id).length > 0)
