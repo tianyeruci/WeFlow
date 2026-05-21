@@ -34,6 +34,15 @@ class InviteStatsSyncService {
   private readonly autoSyncIntervalMs = 30 * 1000
   private readonly remoteRefreshIntervalMs = 5 * 1000
   private readonly maxBatchPayloadBytes = 900 * 1024
+  private syncTaskBlocker: (() => boolean) | null = null
+
+  setSyncTaskBlocker(blocker: (() => boolean) | null): void {
+    this.syncTaskBlocker = blocker
+  }
+
+  private isSyncTaskBlocked(): boolean {
+    return this.syncTaskBlocker?.() === true
+  }
 
   async syncCurrentScope(options: InviteStatsRemoteSyncOptions = {}): Promise<InviteStatsRemoteSyncResult> {
     try {
@@ -84,7 +93,7 @@ class InviteStatsSyncService {
   }
 
   queueSync(options: InviteStatsRemoteSyncOptions = {}): Promise<InviteStatsRemoteSyncResult> {
-    if (this.syncPromise) {
+    if (this.syncPromise || this.isSyncTaskBlocked()) {
       return Promise.resolve({ success: true, skipped: true })
     }
     this.syncPromise = this.syncCurrentScope(options).finally(() => {
@@ -191,7 +200,7 @@ class InviteStatsSyncService {
   }
 
   private async pollRemoteRefreshRequest(): Promise<void> {
-    if (this.remoteRefreshPolling) return
+    if (this.remoteRefreshPolling || this.isSyncTaskBlocked()) return
     this.remoteRefreshPolling = true
     try {
       const endpoint = this.resolveEndpoint()
