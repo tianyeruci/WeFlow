@@ -18,6 +18,7 @@
   - 失败时补充更明确的内部日志。
 - `WeFlow-main/electron/services/inviteStatsSyncService.ts`
   - 为 `fetch` 增加两次重试。
+  - 同步请求优先使用 Electron `net.fetch`，让主进程同步走 Chromium 网络栈，尽量复用系统代理/网络能力。
   - 同步、轮询刷新请求、完成刷新请求、恢复初始化都走统一的网络失败上下文。
   - 失败时会返回带 endpoint 和底层 cause 的错误信息，方便直接定位。
 
@@ -26,5 +27,6 @@
 - `WeFlow-main` `npm run build` 通过。
 
 ## 仍需留意
-- 如果远端地址本身不可达，`fetch` 仍会失败，但现在会直接显示更具体原因。
+- 这次改动在 Electron 主进程，必须重启 WeFlow-main 后才会生效。
+- 如果远端地址本身不可达，网络请求仍会失败，但现在会直接显示更具体原因。
 - 如果 WCDB 本身初始化已损坏，自动重开后仍可能失败，需要再看底层日志。

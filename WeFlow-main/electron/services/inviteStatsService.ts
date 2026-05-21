@@ -340,13 +340,24 @@ const ALL_ACTIVITY_TAG_ID = '__all__'
 class InviteStatsService {
   private readonly fileVersion = 1
   private readonly maxScanLogsPerScope = 80
+  private readonly autoScanInitialDelayMs = 3 * 60 * 1000
   private readonly autoScanIntervalMs = 30 * 1000
+  private readonly autoQuitCheckIntervalMs = 60 * 60 * 1000
   private configService: ConfigService
   private filePath: string | null = null
   private loaded = false
   private store: InviteStatsFile = { version: 1, scopes: {} }
   private scanPromise: Promise<any> | null = null
+  private quitCheckPromise: Promise<any> | null = null
   private activeScanState: {
+    tagId: string
+    tagName: string
+    scanMode: ScanMode
+    startedAt: number
+    groupCount: number
+    scannedMessageCount: number
+  } | null = null
+  private activeQuitCheckState: {
     tagId: string
     tagName: string
     scanMode: ScanMode
@@ -2250,7 +2261,7 @@ class InviteStatsService {
     }
     data.scanLogs.unshift(log)
     data.scanLogs = data.scanLogs.slice(0, this.maxScanLogsPerScope)
-    this.activeScanState = {
+    this.activeQuitCheckState = {
       tagId: tag.tag_id,
       tagName: tag.tag_name,
       scanMode: 'incremental',
@@ -2326,7 +2337,7 @@ class InviteStatsService {
       this.persist()
       return { success: false, log, error: String(error) }
     } finally {
-      this.activeScanState = null
+      this.activeQuitCheckState = null
     }
   }
 
@@ -2416,8 +2427,8 @@ class InviteStatsService {
     }
   }
 
-  async scanActivity(tagId: string): Promise<{ success: boolean; started?: boolean; running?: boolean; log?: InviteScanLog; error?: string }> {
-    if (this.scanPromise) return { success: true, running: true, error: '已有扫描任务正在运行' }
+  async scanActivity(tagId: string): Promise<{ success: boolean; started?: boolean; skipped?: boolean; running?: boolean; log?: InviteScanLog; error?: string }> {
+    if (this.scanPromise) return { success: true, skipped: true }
     const data = this.getScope()
     const normalizedTagId = normalizeText(tagId)
     if (this.isAllActivityScope(normalizedTagId)) {
@@ -2438,8 +2449,8 @@ class InviteStatsService {
     return { success: true, started: true }
   }
 
-  async checkQuitGroups(tagId: string): Promise<{ success: boolean; started?: boolean; running?: boolean; log?: InviteScanLog; error?: string }> {
-    if (this.scanPromise) return { success: true, running: true, error: '已有扫描任务正在运行' }
+  async checkQuitGroups(tagId: string): Promise<{ success: boolean; started?: boolean; skipped?: boolean; running?: boolean; log?: InviteScanLog; error?: string }> {
+    if (this.quitCheckPromise) return { success: true, skipped: true }
     const data = this.getScope()
     const normalizedTagId = normalizeText(tagId)
     if (this.isAllActivityScope(normalizedTagId)) {
@@ -2451,24 +2462,29 @@ class InviteStatsService {
     if (this.getEnabledBindingsForTag(data, normalizedTagId).length === 0) {
       return { success: false, error: '当前活动标签没有绑定微信群' }
     }
-    this.scanPromise = this.checkQuitGroupsInternal(normalizedTagId).catch((error) => ({
+    this.quitCheckPromise = this.checkQuitGroupsInternal(normalizedTagId).catch((error) => ({
       success: false,
       error: error instanceof Error ? error.message : String(error)
     })).finally(() => {
-      this.scanPromise = null
+      this.quitCheckPromise = null
     })
     return { success: true, started: true }
   }
 
-  async getScanStatus(): Promise<{ success: boolean; data?: { running: boolean; active?: any; logs: InviteScanLog[] }; error?: string }> {
-
+  async getScanStatus(): Promise<{ success: boolean; data?: { running: boolean; scanRunning: boolean; quitCheckRunning: boolean; active?: any; scanActive?: any; quitCheckActive?: any; logs: InviteScanLog[] }; error?: string }> {
     try {
       const data = this.getScope()
+      const scanRunning = Boolean(this.scanPromise)
+      const quitCheckRunning = Boolean(this.quitCheckPromise)
       return {
         success: true,
         data: {
-          running: Boolean(this.scanPromise),
-          active: this.activeScanState || undefined,
+          running: scanRunning || quitCheckRunning,
+          scanRunning,
+          quitCheckRunning,
+          active: this.activeScanState || this.activeQuitCheckState || undefined,
+          scanActive: this.activeScanState || undefined,
+          quitCheckActive: this.activeQuitCheckState || undefined,
           logs: data.scanLogs.slice(0, 20)
         }
       }
@@ -2479,7 +2495,7 @@ class InviteStatsService {
 
   async resetAllLocalData(): Promise<{ success: boolean; error?: string }> {
     try {
-      if (this.scanPromise) return { success: false, error: '扫描任务正在运行，请等待完成后再恢复初始化' }
+      if (this.scanPromise || this.quitCheckPromise) return { success: false, error: '扫描或退群任务正在运行，请等待完成后再恢复初始化' }
       this.ensureLoaded()
       this.store = { version: this.fileVersion, scopes: {} }
       this.persist()
@@ -2507,20 +2523,20 @@ class InviteStatsService {
   }
 
   async runBackgroundQuitCheck(): Promise<void> {
-    if (this.scanPromise) return
+    if (this.quitCheckPromise) return
     const data = this.getScope()
     const tagIds = data.activityTags
       .filter((tag) => tag.enabled && this.getEnabledBindingsForTag(data, tag.tag_id).length > 0)
       .map((tag) => tag.tag_id)
     if (tagIds.length === 0) return
-    this.scanPromise = (async () => {
+    this.quitCheckPromise = (async () => {
       for (const tagId of tagIds) {
         await this.checkQuitGroupsInternal(tagId).catch(() => undefined)
       }
     })().finally(() => {
-      this.scanPromise = null
+      this.quitCheckPromise = null
     })
-    await this.scanPromise
+    await this.quitCheckPromise
   }
 
   private getNextBeijingMidnightDelayMs(nowMs = Date.now()): number {
@@ -2536,7 +2552,7 @@ class InviteStatsService {
     this.autoScanStarted = true
     const firstScanTimer = setTimeout(() => {
       void this.runBackgroundScan()
-    }, 3 * 60 * 1000)
+    }, this.autoScanInitialDelayMs)
     if (typeof firstScanTimer.unref === 'function') firstScanTimer.unref()
     this.autoScanTimer = setInterval(() => {
       void this.runBackgroundScan()
@@ -2553,18 +2569,18 @@ class InviteStatsService {
   startAutoQuitCheckScheduler(): void {
     if (this.autoQuitCheckStarted) return
     this.autoQuitCheckStarted = true
-    let firstRun = true
-    const scheduleNext = () => {
-      const timer = setTimeout(async () => {
-        this.autoQuitCheckTimer = null
-        await this.runBackgroundQuitCheck()
-        firstRun = false
-        if (this.autoQuitCheckStarted) scheduleNext()
-      }, firstRun ? 5 * 60 * 1000 : 60 * 60 * 1000)
-      if (typeof timer.unref === 'function') timer.unref()
-      this.autoQuitCheckTimer = timer
-    }
-    scheduleNext()
+    const firstTimer = setTimeout(() => {
+      this.autoQuitCheckTimer = null
+      void this.runBackgroundQuitCheck()
+      if (!this.autoQuitCheckStarted) return
+      const intervalTimer = setInterval(() => {
+        void this.runBackgroundQuitCheck()
+      }, this.autoQuitCheckIntervalMs)
+      if (typeof intervalTimer.unref === 'function') intervalTimer.unref()
+      this.autoQuitCheckTimer = intervalTimer
+    }, this.autoQuitCheckIntervalMs)
+    if (typeof firstTimer.unref === 'function') firstTimer.unref()
+    this.autoQuitCheckTimer = firstTimer
   }
 
   stopAutoQuitCheckScheduler(): void {
@@ -2688,8 +2704,12 @@ class InviteStatsService {
           groupRanking,
           recentActivities,
           scanStatus: {
-            running: Boolean(this.scanPromise),
-            active: this.activeScanState,
+            running: Boolean(this.scanPromise || this.quitCheckPromise),
+            scanRunning: Boolean(this.scanPromise),
+            quitCheckRunning: Boolean(this.quitCheckPromise),
+            active: this.activeScanState || this.activeQuitCheckState,
+            scanActive: this.activeScanState,
+            quitCheckActive: this.activeQuitCheckState,
             logs: data.scanLogs.slice(0, 8)
           }
         }

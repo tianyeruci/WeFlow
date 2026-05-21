@@ -1,5 +1,6 @@
 import { inviteStatsService, type InviteRemoteSyncPayload } from './inviteStatsService'
 import { ConfigService } from './config'
+import { net } from 'electron'
 
 export interface InviteStatsRemoteSyncOptions {
   endpoint?: string
@@ -11,6 +12,7 @@ export interface InviteStatsRemoteSyncResult {
   success: boolean
   accountScope?: string
   counts?: Record<string, number>
+  skipped?: boolean
   error?: string
 }
 
@@ -28,8 +30,8 @@ class InviteStatsSyncService {
   private autoSyncStarted = false
   private remoteRefreshStarted = false
   private remoteRefreshPolling = false
-  private readonly autoSyncInitialDelayMs = 0
-  private readonly autoSyncIntervalMs = 5 * 60 * 1000
+  private readonly autoSyncInitialDelayMs = 5 * 60 * 1000
+  private readonly autoSyncIntervalMs = 30 * 1000
   private readonly remoteRefreshIntervalMs = 5 * 1000
   private readonly maxBatchPayloadBytes = 900 * 1024
 
@@ -83,10 +85,7 @@ class InviteStatsSyncService {
 
   queueSync(options: InviteStatsRemoteSyncOptions = {}): Promise<InviteStatsRemoteSyncResult> {
     if (this.syncPromise) {
-      if (options.full) {
-        return this.syncPromise.then(() => this.queueSync(options))
-      }
-      return this.syncPromise
+      return Promise.resolve({ success: true, skipped: true })
     }
     this.syncPromise = this.syncCurrentScope(options).finally(() => {
       this.syncPromise = null
@@ -139,18 +138,18 @@ class InviteStatsSyncService {
   startAutoSyncScheduler(): void {
     if (this.autoSyncStarted) return
     this.autoSyncStarted = true
-
-    const scheduleNext = (delayMs: number) => {
-      const timer = setTimeout(async () => {
-        this.autoSyncTimer = null
-        await this.queueSync()
-        if (this.autoSyncStarted) scheduleNext(this.autoSyncIntervalMs)
-      }, delayMs)
-      if (typeof timer.unref === 'function') timer.unref()
-      this.autoSyncTimer = timer
-    }
-
-    scheduleNext(this.autoSyncInitialDelayMs)
+    const firstTimer = setTimeout(() => {
+      this.autoSyncTimer = null
+      void this.queueSync()
+      if (!this.autoSyncStarted) return
+      const intervalTimer = setInterval(() => {
+        void this.queueSync()
+      }, this.autoSyncIntervalMs)
+      if (typeof intervalTimer.unref === 'function') intervalTimer.unref()
+      this.autoSyncTimer = intervalTimer
+    }, this.autoSyncInitialDelayMs)
+    if (typeof firstTimer.unref === 'function') firstTimer.unref()
+    this.autoSyncTimer = firstTimer
   }
 
   stopAutoSyncScheduler(): void {
@@ -239,9 +238,9 @@ class InviteStatsSyncService {
         },
         body: JSON.stringify({
           requestId,
-          success: result.success,
+          success: result.skipped ? false : result.success,
           counts: result.counts || {},
-          error: result.error || ''
+          error: result.skipped ? (result.error || '同步任务正在运行，已跳过') : (result.error || '')
         })
       }, '完成远程刷新请求')
     } catch (error) {
@@ -271,7 +270,7 @@ class InviteStatsSyncService {
     let lastError: unknown = null
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
-        return await fetch(endpoint, init)
+        return await this.request(endpoint, init)
       } catch (error) {
         lastError = error
         const message = this.describeRequestError(label, endpoint, error)
@@ -282,6 +281,13 @@ class InviteStatsSyncService {
       }
     }
     throw new Error(this.describeRequestError(label, endpoint, lastError))
+  }
+
+  private async request(endpoint: string, init: RequestInit): Promise<Response> {
+    if (net && typeof net.fetch === 'function') {
+      return net.fetch(endpoint, init as any) as Promise<Response>
+    }
+    return fetch(endpoint, init)
   }
 
   private describeRequestError(label: string, endpoint: string, error: unknown): string {
