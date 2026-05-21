@@ -9,7 +9,7 @@ import {
   TraceStatus
 } from '@/types/invite'
 import { csvText } from './csv'
-import { supabaseSelect } from './supabase-rest'
+import { supabaseSelect, supabaseSelectAll } from './supabase-rest'
 
 type AnyRecord = Record<string, unknown>
 
@@ -52,6 +52,7 @@ type GroupTagBinding = {
   activity_tag_id?: string
   enabled?: boolean
   member_count?: number | null
+  updated_at?: string | null
   raw_json?: unknown
 }
 
@@ -105,10 +106,11 @@ export async function getDashboard(filters: DashboardFilters): Promise<Dashboard
     loadFinalEvents(filters.tagId),
     loadGroupBindings(filters.tagId)
   ])
-  const inviteEvents = events.filter(isInviteEvent)
-  const quitEvents = events.filter(isQuitEvent)
-  const groups = buildGroupsFromBindings(groupBindings)
-  const rankingEvents = inviteEvents.filter(row => {
+  const scopedBindings = getScopedBindings(groupBindings, filters.tagId)
+  const scopedInviteEvents = getScopedInviteEvents(events, groupBindings, filters.tagId)
+  const scopedQuitEvents = getScopedQuitEvents(events, groupBindings, filters.tagId)
+  const groups = buildGroupsFromBindings(scopedBindings)
+  const rankingEvents = scopedInviteEvents.filter(row => {
     if (filters.rankingGroupId && String(row.group_id || '') !== filters.rankingGroupId) return false
     return withinRange(row.invite_time, filters.rankingStart, filters.rankingEnd)
   })
@@ -117,20 +119,25 @@ export async function getDashboard(filters: DashboardFilters): Promise<Dashboard
     cards: {
       activeRobots: 0,
       monitoredGroups: groups.length,
-      totalMembers: inviteEvents.filter(row => row.delete_flag !== 1).length,
-      totalMembersWithQuit: inviteEvents.length,
-      todayNew: inviteEvents.filter(row => row.delete_flag !== 1 && isToday(row.invite_time)).length,
+      totalMembers: scopedInviteEvents.filter(row => row.delete_flag !== 1).length,
+      totalMembersWithQuit: scopedInviteEvents.length,
+      todayNew: scopedInviteEvents.filter(row => row.delete_flag !== 1 && isToday(row.invite_time)).length,
       todayQuit: [
-        ...quitEvents.filter(row => isToday(eventTime(row))),
-        ...inviteEvents.filter(row => row.delete_flag === 1 && isToday(eventTime(row)))
+        ...scopedQuitEvents.filter(row => row.status === 'confirmed' && isToday(eventTime(row))),
+        ...scopedInviteEvents.filter(row => row.status === 'confirmed' && row.delete_flag === 1 && isToday(eventTime(row)))
       ].length,
-      pendingCount: events.filter(row => row.status === 'pending').length
+      pendingCount: [
+        ...scopedInviteEvents,
+        ...scopedQuitEvents
+      ].filter(row => row.status === 'pending').length
     },
     groups,
-    hourlyDistribution: buildHourlyDistribution(inviteEvents),
+    hourlyDistribution: buildHourlyDistribution(scopedInviteEvents),
     inviteRanking: buildInviteRanking(rankingEvents),
-    groupRanking: buildGroupRanking(groupBindings),
+    groupRanking: buildGroupRanking(scopedBindings),
     recentActivities: events
+      .filter(row => isEventInCurrentTag(row, groupBindings, filters.tagId))
+      .filter(row => row.status !== 'ignored')
       .slice()
       .sort((a, b) => timeValue(eventTime(b)) - timeValue(eventTime(a)))
       .slice(0, 9)
@@ -261,24 +268,24 @@ export async function getBatchGroupMemberExportFiles(filters: GroupReleaseFilter
 async function loadFinalEvents(tagId?: string) {
   const query: Record<string, string | number> = {
     select: '*',
-    limit: 10000
+    order: 'id.asc'
   }
 
   if (tagId && tagId !== ALL_ACTIVITY_TAG_ID) query.activity_tag_id = `eq.${tagId}`
 
-  return supabaseSelect<FinalStatEvent>('final_stat_events', query)
+  return supabaseSelectAll<FinalStatEvent>('final_stat_events', query)
 }
 
 async function loadGroupBindings(tagId?: string) {
   const query: Record<string, string | number> = {
-    select: 'group_id,group_name,activity_tag_id,enabled,member_count,raw_json',
+    select: 'group_id,group_name,activity_tag_id,enabled,member_count,updated_at,raw_json',
     enabled: 'eq.true',
-    limit: 10000
+    order: 'id.asc'
   }
 
   if (tagId && tagId !== ALL_ACTIVITY_TAG_ID) query.activity_tag_id = `eq.${tagId}`
 
-  return supabaseSelect<GroupTagBinding>('group_tag_bindings', query)
+  return supabaseSelectAll<GroupTagBinding>('group_tag_bindings', query)
 }
 
 function isConfirmedStatEvent(row: FinalStatEvent) {
@@ -313,13 +320,18 @@ function buildGroupsFromEvents(events: FinalStatEvent[]): GroupOption[] {
 }
 
 function buildGroupsFromBindings(bindings: GroupTagBinding[]): GroupOption[] {
-  const groups = new Map<string, GroupOption>()
+  const groups = new Map<string, GroupTagBinding>()
   bindings.forEach(row => {
     const id = String(row.group_id || row.group_name || '')
     if (!id) return
-    groups.set(id, { id, name: bindingGroupName(row), avatarUrl: groupAvatarUrl(row) })
+    const current = groups.get(id)
+    if (!current || timeValue(row.updated_at) >= timeValue(current.updated_at)) {
+      groups.set(id, row)
+    }
   })
-  return Array.from(groups.values()).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
+  return Array.from(groups.values())
+    .map(row => ({ id: String(row.group_id || row.group_name || ''), name: bindingGroupName(row), avatarUrl: groupAvatarUrl(row) }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
 }
 
 function buildHourlyDistribution(events: FinalStatEvent[]) {
@@ -348,18 +360,69 @@ function buildInviteRanking(events: FinalStatEvent[]): InviteRankingRow[] {
 }
 
 function buildGroupRanking(bindings: GroupTagBinding[]) {
-  const groups = new Map<string, { groupName: string; count: number }>()
+  const groups = new Map<string, GroupTagBinding>()
   bindings.forEach(row => {
     const id = String(row.group_id || row.group_name || '')
     if (!id) return
-    groups.set(id, {
-      groupName: bindingGroupName(row),
-      count: normalizeCount(row.member_count)
-    })
+    const current = groups.get(id)
+    if (!current || timeValue(row.updated_at) >= timeValue(current.updated_at)) {
+      groups.set(id, row)
+    }
   })
   return Array.from(groups.entries())
-    .map(([groupId, group]) => ({ groupId, groupName: group.groupName, count: group.count }))
+    .map(([groupId, group]) => ({ groupId, groupName: bindingGroupName(group), count: normalizeCount(group.member_count) }))
     .sort((a, b) => b.count - a.count)
+}
+
+function getScopedBindings(bindings: GroupTagBinding[], tagId?: string) {
+  const scoped = isAllActivityScope(tagId)
+    ? bindings.filter(row => row.enabled !== false)
+    : bindings.filter(row => row.enabled !== false && String(row.activity_tag_id || '') === String(tagId || ''))
+  return dedupeBindingsByGroupId(scoped)
+}
+
+function getScopedInviteEvents(events: FinalStatEvent[], bindings: GroupTagBinding[], tagId?: string) {
+  return events.filter(row => isInviteEvent(row) && isEventInCurrentTag(row, bindings, tagId))
+}
+
+function getScopedQuitEvents(events: FinalStatEvent[], bindings: GroupTagBinding[], tagId?: string) {
+  return events.filter(row => isQuitEvent(row) && isEventInCurrentTag(row, bindings, tagId))
+}
+
+function isAllActivityScope(tagId?: string) {
+  const normalized = String(tagId || '').trim()
+  return !normalized || normalized === ALL_ACTIVITY_TAG_ID
+}
+
+function isEventInCurrentTag(row: FinalStatEvent, bindings: GroupTagBinding[], tagId?: string) {
+  const normalizedTagId = String(tagId || '').trim()
+  if (isAllActivityScope(normalizedTagId)) {
+    return bindings.some(binding =>
+      binding.enabled !== false &&
+      String(binding.group_id || '') === String(row.group_id || '') &&
+      String(binding.activity_tag_id || '') === String(row.activity_tag_id || '')
+    )
+  }
+
+  return String(row.activity_tag_id || '') === normalizedTagId &&
+    bindings.some(binding =>
+      binding.enabled !== false &&
+      String(binding.group_id || '') === String(row.group_id || '') &&
+      String(binding.activity_tag_id || '') === normalizedTagId
+    )
+}
+
+function dedupeBindingsByGroupId(bindings: GroupTagBinding[]) {
+  const groups = new Map<string, GroupTagBinding>()
+  bindings.forEach(row => {
+    const id = String(row.group_id || row.group_name || '')
+    if (!id) return
+    const current = groups.get(id)
+    if (!current || timeValue(row.updated_at) >= timeValue(current.updated_at)) {
+      groups.set(id, row)
+    }
+  })
+  return Array.from(groups.values())
 }
 
 function countUniqueMembers(events: FinalStatEvent[]) {

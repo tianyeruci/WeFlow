@@ -1137,12 +1137,26 @@ function InviteStatsPage() {
     }
   }, [dashboard])
 
+  const rankingRows = dashboard?.inviteRanking || []
+  const rankingLabelWidth = useMemo(() => {
+    if (!rankingRows.length || typeof document === 'undefined') return 120
+    const canvas = document.createElement('canvas')
+    const context = canvas.getContext('2d')
+    if (!context) return 120
+    context.font = '800 14px "Microsoft YaHei", "PingFang SC", sans-serif'
+    const maxWidth = rankingRows.reduce((max, row) => {
+      const label = row.inviter || '未知来源'
+      return Math.max(max, context.measureText(label).width)
+    }, 0)
+    return Math.max(120, Math.ceil(maxWidth + 16))
+  }, [rankingRows])
+  const rankingChartHeight = useMemo(() => Math.max(390, 120 + rankingRows.length * 34), [rankingRows.length])
+
   const rankingOption = useMemo(() => {
-    const rows = dashboard?.inviteRanking || []
     return {
       color: rankingImageColors,
       tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-      grid: { left: 96, right: 28, top: 18, bottom: 28 },
+      grid: { left: Math.max(120, rankingLabelWidth + 24), right: 28, top: 18, bottom: 28 },
       xAxis: {
         type: 'value',
         axisLabel: { color: '#7a8499' },
@@ -1151,12 +1165,18 @@ function InviteStatsPage() {
       yAxis: {
         type: 'category',
         inverse: true,
-        data: rows.map((row) => row.inviter || '未知来源'),
-        axisLabel: { color: '#4b5563', width: 84, overflow: 'truncate' }
+        data: rankingRows.map((row) => row.inviter || '未知来源'),
+        axisLabel: {
+          color: '#4b5563',
+          width: rankingLabelWidth,
+          interval: 0,
+          hideOverlap: false,
+          overflow: 'none'
+        }
       },
       series: [{
         type: 'bar',
-        data: rows.map((row, index) => ({
+        data: rankingRows.map((row, index) => ({
           value: row.invite_count,
           itemStyle: {
             color: rankingImageColors[index % rankingImageColors.length],
@@ -1167,7 +1187,7 @@ function InviteStatsPage() {
         label: { show: true, position: 'right' }
       }]
     }
-  }, [dashboard])
+  }, [rankingLabelWidth, rankingRows])
 
   const cards = dashboard?.cards
   const latestLog = scanLogs[0]
@@ -1410,7 +1430,7 @@ function InviteStatsPage() {
                 />
               </div>
               {chartMode === 'bar' ? (
-                <ReactECharts option={rankingOption} style={{ height: 390 }} />
+                <ReactECharts option={rankingOption} style={{ height: rankingChartHeight }} />
               ) : (
                 <InviteRankingPieChart
                   rows={(dashboard?.inviteRanking || []).map((row) => ({
