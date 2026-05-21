@@ -340,6 +340,7 @@ const ALL_ACTIVITY_TAG_ID = '__all__'
 class InviteStatsService {
   private readonly fileVersion = 1
   private readonly maxScanLogsPerScope = 80
+  private readonly systemMessagePageSize = 500
   private readonly autoScanInitialDelayMs = 10 * 60 * 1000
   private readonly autoScanIntervalMs = 3 * 60 * 1000
   private readonly autoQuitCheckIntervalMs = 30 * 60 * 1000
@@ -1031,6 +1032,10 @@ class InviteStatsService {
     }, 0)
   }
 
+  private isInviteSystemMessage(message: Message, groupId: string): boolean {
+    return Number(message.localType || 0) === 10000 || normalizeText(message.senderUsername) === groupId
+  }
+
   private advanceGroupRawUpdatedAt(data: InviteStatsScopeData, groupId: string, updatedAt: number): boolean {
     const latest = this.getGroupRawEvents(data, groupId)
       .sort((a, b) => Number(b.updated_at || 0) - Number(a.updated_at || 0))[0]
@@ -1617,6 +1622,7 @@ class InviteStatsService {
     const sourceEvents = dedupeMembers
       ? this.getDashboardInviteEvents(data, tagId, true)
       : this.getScopedInviteEvents(data, tagId)
+        .filter((event) => event.status === 'confirmed' && event.valid_flag === 1)
     const effective = this.filterByTime(sourceEvents, startTime, endTime)
       .filter((event) => {
         if (normalizedGroupId && event.group_id !== normalizedGroupId) return false
@@ -2126,7 +2132,18 @@ class InviteStatsService {
     todayStart: number,
     todayEnd: number
   ): InviteStatsGroupRow[] {
-    const bindingByGroupId = new Map(data.groupTagBindings.map((binding) => [binding.group_id, binding]))
+    const bindingByGroupId = new Map<string, InviteGroupTagBinding>()
+    for (const binding of data.groupTagBindings) {
+      if (!binding.group_id) continue
+      const existing = bindingByGroupId.get(binding.group_id)
+      if (
+        !existing ||
+        (binding.enabled && !existing.enabled) ||
+        (binding.enabled === existing.enabled && Number(binding.updated_at || 0) >= Number(existing.updated_at || 0))
+      ) {
+        bindingByGroupId.set(binding.group_id, binding)
+      }
+    }
     const tagById = new Map(data.activityTags.map((tag) => [tag.tag_id, tag]))
     const todayJoinByGroupId = new Map<string, Set<string>>()
     const todayQuitByGroupId = new Map<string, Set<string>>()
@@ -2326,19 +2343,43 @@ class InviteStatsService {
     try {
       for (const binding of bindings) {
         const context = await this.getGroupContext(data, binding)
-        const result = await wcdbService.getMessagesByType(binding.group_id, 10000, true, 0, 0)
-        if (!result.success || !Array.isArray(result.rows)) continue
-
-        const messages = chatService.mapRowsToMessagesForApi(result.rows as Record<string, any>[], binding.group_id)
         const hasGroupRawEvents = this.getGroupRawEvents(data, binding.group_id).length > 0
         const scanStart = this.getGroupLastRawUpdatedAt(data, binding.group_id)
         let lastInviteTime = binding.last_invite_time || this.getGroupLastInviteTime(data, tagId, binding.group_id) || 0
         let lastMessageId = binding.last_message_id || ''
         let groupAddedRawEvent = false
+        const messages: Message[] = []
+        let offset = 0
+        let reachedWatermark = false
+
+        while (!reachedWatermark) {
+          const result = await wcdbService.getMessagesByType(binding.group_id, 10000, false, this.systemMessagePageSize, offset)
+          if (!result.success || !Array.isArray(result.rows) || result.rows.length === 0) break
+
+          const pageMessages = chatService.mapRowsToMessagesForApi(result.rows as Record<string, any>[], binding.group_id)
+            .filter((message) => this.isInviteSystemMessage(message, binding.group_id))
+          let oldestMessageTime = Number.POSITIVE_INFINITY
+
+          for (const message of pageMessages) {
+            const createTime = Number(message.createTime || 0)
+            if (createTime > 0) oldestMessageTime = Math.min(oldestMessageTime, createTime)
+            if (scanStart > 0 && createTime <= scanStart) continue
+            if (createTime > startedAt) continue
+            messages.push(message)
+          }
+
+          if (scanStart > 0 && oldestMessageTime <= scanStart) reachedWatermark = true
+          if (result.rows.length < this.systemMessagePageSize) break
+          offset += result.rows.length
+        }
+
+        messages.sort((a, b) => {
+          const timeDiff = Number(a.createTime || 0) - Number(b.createTime || 0)
+          if (timeDiff !== 0) return timeDiff
+          return Number(a.localId || 0) - Number(b.localId || 0)
+        })
 
         for (const message of messages) {
-          if (scanStart > 0 && message.createTime <= scanStart) continue
-          if (message.createTime > startedAt) continue
           log.scanned_messages += 1
           if (this.activeScanState) this.activeScanState.scannedMessageCount = log.scanned_messages
 
@@ -2587,12 +2628,19 @@ class InviteStatsService {
     await this.scanPromise
   }
 
-  async ensureBackgroundScanComplete(): Promise<void> {
-    if (this.scanPromise) {
-      await this.scanPromise
+  async ensureBackgroundScanComplete(maxWaitMs = 0): Promise<void> {
+    const scanTask = this.scanPromise || this.runBackgroundScan()
+    if (!maxWaitMs || maxWaitMs <= 0) {
+      await scanTask
       return
     }
-    await this.runBackgroundScan()
+    await Promise.race([
+      scanTask.catch(() => undefined),
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, maxWaitMs)
+        if (typeof timer.unref === 'function') timer.unref()
+      })
+    ])
   }
 
   async runBackgroundQuitCheck(): Promise<void> {
