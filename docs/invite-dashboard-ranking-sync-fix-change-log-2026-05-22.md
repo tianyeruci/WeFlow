@@ -8,8 +8,10 @@
 - Web 排行榜日期筛选在浏览器端转为绝对 ISO 时间传给接口，避免部署环境时区导致筛选偏移。
 - Web 今日新增和进群时段分布改为北京时间口径，和 Main 数据大屏一致。
 - 邀请排行榜聚合过滤为 confirmed 且 valid 的邀请事件；Main 不去重时按事件数统计，去重时仍按成员键统计。
+- 修复导出 worker 启动时可能和邀请统计后台任务同时打开 WCDB 的问题：批量会话导出、单会话导出、联系人导出和朋友圈导出都会先进入导出忙碌保护，并最多等待邀请统计扫描/同步任务 30 秒收尾。
 
 ## 修改文件
+- `WeFlow-main/electron/main.ts`
 - `WeFlow-main/electron/services/inviteStatsService.ts`
 - `WeFlow-main/electron/services/inviteStatsSyncService.ts`
 - `WeFlow-main/src/pages/InviteStatsPage.tsx`

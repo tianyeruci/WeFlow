@@ -2643,6 +2643,20 @@ class InviteStatsService {
     ])
   }
 
+  async waitForBackgroundTasksIdle(maxWaitMs = 0): Promise<boolean> {
+    const tasks = [this.scanPromise, this.quitCheckPromise].filter(Boolean) as Promise<any>[]
+    if (tasks.length === 0) return true
+    const waitAll = Promise.all(tasks.map((task) => task.catch(() => undefined))).then(() => true)
+    if (!maxWaitMs || maxWaitMs <= 0) return waitAll
+    return Promise.race([
+      waitAll,
+      new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), maxWaitMs)
+        if (typeof timer.unref === 'function') timer.unref()
+      })
+    ])
+  }
+
   async runBackgroundQuitCheck(): Promise<void> {
     if (this.quitCheckPromise || this.isBackgroundTaskBlocked()) return
     const data = this.getScope()
