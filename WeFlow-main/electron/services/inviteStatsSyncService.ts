@@ -115,6 +115,19 @@ class InviteStatsSyncService {
     return this.syncPromise
   }
 
+  async waitForSyncIdle(maxWaitMs = 0): Promise<boolean> {
+    if (!this.syncPromise) return true
+    const waitSync = this.syncPromise.catch(() => undefined).then(() => true)
+    if (!maxWaitMs || maxWaitMs <= 0) return waitSync
+    return Promise.race([
+      waitSync,
+      new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), maxWaitMs)
+        if (typeof timer.unref === 'function') timer.unref()
+      })
+    ])
+  }
+
   async resetAllData(options: InviteStatsRemoteSyncOptions = {}): Promise<InviteStatsResetResult> {
     try {
       const endpoint = this.resolveEndpoint(options.endpoint)
