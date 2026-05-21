@@ -433,6 +433,7 @@ function InviteStatsPage() {
   const [pendingRows, setPendingRows] = useState<InviteMemberTraceRow[]>([])
   const [scanLogs, setScanLogs] = useState<InviteScanLog[]>([])
   const [isScanning, setIsScanning] = useState(false)
+  const [isQuitChecking, setIsQuitChecking] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   const [isDashboardLoading, setIsDashboardLoading] = useState(false)
   const [rawPreview, setRawPreview] = useState<InviteMemberTraceRow | null>(null)
@@ -461,6 +462,7 @@ function InviteStatsPage() {
     limit: 200
   })
   const [toast, setToast] = useState('')
+  const groupTagSelectValue = activeView === 'groups' && selectedTagId === ALL_ACTIVITY_TAG_ID ? '' : selectedTagId
 
   const selectedTag = useMemo(
     () => selectedTagId === ALL_ACTIVITY_TAG_ID ? undefined : tags.find((tag) => tag.tag_id === selectedTagId),
@@ -469,6 +471,7 @@ function InviteStatsPage() {
   const isAllActivitySelected = selectedTagId === ALL_ACTIVITY_TAG_ID
   const selectedScopeLabel = isAllActivitySelected ? '全部活动' : (selectedTag?.tag_name || '当前活动')
   const selectedScopeFileLabel = isAllActivitySelected ? '全部活动' : (selectedTag?.tag_name || '活动')
+  const isAnyTaskRunning = isScanning || isQuitChecking
   const memberTotalLabel = includeQuitMembers
     ? (dedupeMembers ? '总成员数含退群 / 去重' : '总成员数含退群 / 不去重')
     : (dedupeMembers ? '总成员数仅在群 / 去重' : '总成员数仅在群 / 不去重')
@@ -531,6 +534,9 @@ function InviteStatsPage() {
       const result = await window.electronAPI.inviteStats.syncRemote(options)
       if (!result.success) {
         showToast(result.error || '远程同步失败')
+        return
+      }
+      if (result.skipped) {
         return
       }
       const total = Object.values(result.counts || {}).reduce((sum, count) => sum + Number(count || 0), 0)
@@ -646,7 +652,8 @@ function InviteStatsPage() {
       setTags(nextTags)
       setGroups(nextGroups)
       if (scanResult.success && scanResult.data) {
-        setIsScanning(scanResult.data.running)
+        setIsScanning(Boolean(scanResult.data.scanRunning ?? scanResult.data.running))
+        setIsQuitChecking(Boolean(scanResult.data.quitCheckRunning))
         setScanLogs(scanResult.data.logs || [])
       }
 
@@ -680,7 +687,8 @@ function InviteStatsPage() {
       if (result.success) {
         setDashboard(result.data || null)
         if (result.data?.scanStatus) {
-          setIsScanning(result.data.scanStatus.running)
+          setIsScanning(Boolean(result.data.scanStatus.scanRunning ?? result.data.scanStatus.running))
+          setIsQuitChecking(Boolean(result.data.scanStatus.quitCheckRunning))
           setScanLogs(result.data.scanStatus.logs || [])
         }
       } else {
@@ -828,9 +836,13 @@ function InviteStatsPage() {
       const result = await window.electronAPI.inviteStats.getScanStatus()
       if (result.success && result.data) {
         const wasScanning = isScanning
-        setIsScanning(result.data.running)
+        const wasQuitChecking = isQuitChecking
+        const nextScanning = Boolean(result.data.scanRunning ?? result.data.running)
+        const nextQuitChecking = Boolean(result.data.quitCheckRunning)
+        setIsScanning(nextScanning)
+        setIsQuitChecking(nextQuitChecking)
         setScanLogs(result.data.logs || [])
-        if (wasScanning && !result.data.running) {
+        if ((wasScanning && !nextScanning) || (wasQuitChecking && !nextQuitChecking)) {
           void refreshMeta(selectedTagId)
           void loadDashboard()
           if (activeView === 'trace') void loadTrace()
@@ -839,7 +851,7 @@ function InviteStatsPage() {
       }
     }, 5000)
     return () => window.clearInterval(timer)
-  }, [activeView, isScanning, loadDashboard, loadPending, loadTrace, refreshMeta, selectedTagId])
+  }, [activeView, isScanning, isQuitChecking, loadDashboard, loadPending, loadTrace, refreshMeta, selectedTagId])
 
   const createActivityTag = () => {
     setCreateTagName('')
@@ -893,9 +905,11 @@ function InviteStatsPage() {
       await refreshMeta(selectedTagId)
       return
     }
-    if (result.running) {
-      showToast('已有扫描任务正在运行')
-    } else {
+    if (result.skipped) {
+      await refreshMeta(selectedTagId)
+      return
+    }
+    if (result.started) {
       showToast('增量扫描已开始，后台异步执行')
     }
     await refreshMeta(selectedTagId)
@@ -905,16 +919,22 @@ function InviteStatsPage() {
   }
 
   const checkQuitSelectedTag = async () => {
-    if (!selectedTagId || isScanning) return
-    setIsScanning(true)
+    if (!selectedTagId || isQuitChecking) return
+    setIsQuitChecking(true)
     const result = await window.electronAPI.inviteStats.checkQuitGroups(selectedTagId)
     if (!result.success) {
-      showToast(result.error || '退出群检查失败')
-      setIsScanning(false)
+      showToast(result.error || '退群检查失败')
+      setIsQuitChecking(false)
       await refreshMeta(selectedTagId)
       return
     }
-    showToast(result.running ? '已有扫描任务正在运行' : '退出群检查已开始，后台异步执行')
+    if (result.skipped) {
+      await refreshMeta(selectedTagId)
+      return
+    }
+    if (result.started) {
+      showToast('退群检查已开始，后台异步执行')
+    }
     await refreshMeta(selectedTagId)
     await loadDashboard()
     if (activeView === 'trace') await loadTrace()
@@ -1209,21 +1229,23 @@ function InviteStatsPage() {
             <label>活动标签</label>
             <div className={`invite-tag-control ${canManageTags ? 'with-delete' : ''}`}>
               <select
-                value={selectedTagId}
+                value={activeView === 'groups' ? groupTagSelectValue : selectedTagId}
                 onChange={(event) => {
-                  setSelectedTagId(event.target.value)
+                  const nextTagId = event.target.value || ALL_ACTIVITY_TAG_ID
+                  setSelectedTagId(nextTagId)
                   setRankingGroupId('')
                   setTraceFilters((prev) => ({ ...prev, groupId: undefined }))
                 }}
               >
-                <option value="">请选择活动标签</option>
-                <option value={ALL_ACTIVITY_TAG_ID}>全部活动</option>
+                {activeView === 'groups'
+                  ? <option value="">请选择活动标签</option>
+                  : <option value={ALL_ACTIVITY_TAG_ID}>全部活动</option>}
                 {tags.map((tag) => (
                   <option key={tag.tag_id} value={tag.tag_id}>{tag.tag_name}</option>
                 ))}
               </select>
               {canManageTags && (
-                <button type="button" onClick={deleteActivityTag} disabled={!selectedTagId || isScanning} title="删除活动标签" className="danger">
+                <button type="button" onClick={deleteActivityTag} disabled={!selectedTag || isAnyTaskRunning} title="删除活动标签" className="danger">
                   <Trash2 size={15} />
                 </button>
               )}
@@ -1238,8 +1260,8 @@ function InviteStatsPage() {
               {isRemoteSyncing ? <Loader2 size={16} className="spin" /> : <Upload size={16} />}
               <span>{isRemoteSyncing ? '同步中' : '同步本地数据'}</span>
             </button>
-            <button className="invite-quit-check-btn" onClick={() => void checkQuitSelectedTag()} disabled={!selectedTagId || isScanning}>
-              {isScanning ? <Loader2 size={16} className="spin" /> : <Search size={16} />}
+            <button className="invite-quit-check-btn" onClick={() => void checkQuitSelectedTag()} disabled={!selectedTagId || isQuitChecking}>
+              {isQuitChecking ? <Loader2 size={16} className="spin" /> : <Search size={16} />}
               <span>检查是否退出群</span>
             </button>
           </div>
@@ -1403,7 +1425,7 @@ function InviteStatsPage() {
               <section className="invite-panel invite-activity-panel">
                 <div className="invite-panel-title">
                   <h2>实时动态</h2>
-                  <span className={isScanning ? 'invite-status running' : 'invite-status'}>{isScanning ? '扫描中' : '空闲'}</span>
+                  <span className={isAnyTaskRunning ? 'invite-status running' : 'invite-status'}>{isAnyTaskRunning ? '运行中' : '空闲'}</span>
                 </div>
                 <div className="invite-activity-list">
                   {(dashboard?.recentActivities || []).slice(0, 9).map((row) => (
