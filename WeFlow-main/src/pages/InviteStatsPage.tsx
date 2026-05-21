@@ -749,7 +749,7 @@ function InviteStatsPage() {
     setManualInviteForm({
       groupId: row.group_id || fallbackGroup?.group_id || '',
       user: mode === 'add' ? (memberName || contextMember || '') : (row.user || ''),
-      wxId: mode === 'add' ? '' : (row.wx_id || ''),
+      wxId: mode === 'add' ? '' : (row.wx_id || row.user || ''),
       inviter: row.inviter || '',
       inviterWxId: row.inviter_wx_id || ''
     })

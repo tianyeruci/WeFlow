@@ -70,6 +70,10 @@ const defaultUpdateTrack: 'stable' | 'preview' | 'dev' = (() => {
 let configService: ConfigService | null = null
 const activeExportWorkers = new Map<string, Worker>()
 const activeExportTasks = new Set<string>()
+const isExportBusy = () => activeExportTasks.size > 0
+
+inviteStatsService.setBackgroundTaskBlocker(isExportBusy)
+inviteStatsSyncService.setSyncTaskBlocker(isExportBusy)
 
 const normalizeExportTaskId = (taskId: unknown): string => String(taskId || '').trim()
 
@@ -4321,7 +4325,6 @@ app.whenReady().then(async () => {
   })
   messagePushService.start()
   insightService.start()
-  inviteStatsService.setAfterScanSuccessCallback(() => inviteStatsSyncService.queueSync())
   inviteStatsService.startAutoScanScheduler()
   inviteStatsService.startAutoQuitCheckScheduler()
   inviteStatsSyncService.startAutoSyncScheduler()

@@ -340,9 +340,9 @@ const ALL_ACTIVITY_TAG_ID = '__all__'
 class InviteStatsService {
   private readonly fileVersion = 1
   private readonly maxScanLogsPerScope = 80
-  private readonly autoScanInitialDelayMs = 3 * 60 * 1000
-  private readonly autoScanIntervalMs = 30 * 1000
-  private readonly autoQuitCheckIntervalMs = 60 * 60 * 1000
+  private readonly autoScanInitialDelayMs = 10 * 60 * 1000
+  private readonly autoScanIntervalMs = 3 * 60 * 1000
+  private readonly autoQuitCheckIntervalMs = 30 * 60 * 1000
   private configService: ConfigService
   private filePath: string | null = null
   private loaded = false
@@ -370,6 +370,7 @@ class InviteStatsService {
   private autoQuitCheckTimer: ReturnType<typeof setTimeout> | null = null
   private autoQuitCheckStarted = false
   private afterScanSuccess: (() => void | Promise<void>) | null = null
+  private backgroundTaskBlocker: (() => boolean) | null = null
 
   constructor() {
     this.configService = ConfigService.getInstance()
@@ -431,11 +432,17 @@ class InviteStatsService {
 
   private ensureScopeShape(data: InviteStatsScopeData): void {
     const scope = data as InviteStatsScopeData & { rawEvents?: InviteRawEvent[] }
-    if (!Array.isArray(scope.rawEvents)) scope.rawEvents = []
-    if (scope.rawEvents.length === 0 && (data.inviteEvents.length > 0 || data.quitEvents.length > 0)) {
-      for (const event of data.inviteEvents) this.upsertRawEventFromInvite(data, event)
-      for (const event of data.quitEvents) this.upsertRawEventFromQuit(data, event)
+    let changed = false
+    if (!Array.isArray(scope.rawEvents)) {
+      scope.rawEvents = []
+      changed = true
     }
+    if (scope.rawEvents.length === 0 && (data.inviteEvents.length > 0 || data.quitEvents.length > 0)) {
+      for (const event of data.inviteEvents) changed = this.upsertRawEventFromInvite(data, event) || changed
+      for (const event of data.quitEvents) changed = this.upsertRawEventFromQuit(data, event) || changed
+    }
+    changed = this.ensureRawEventTimestamps(data) || changed
+    if (changed) this.persist()
   }
 
   private nowSeconds(): number {
@@ -595,7 +602,7 @@ class InviteStatsService {
       }]
     }
 
-    const invite = /^["']?(.+?)["']?邀请["']?(.+?)["']?加入(?:了)?群聊$/.exec(normalized)
+    const invite = /^["']*(.+?)["']*邀请["']*(.+?)["']*加入(?:了)?群聊$/.exec(normalized)
     if (invite) {
       const inviter = normalizeText(invite[1])
       const users = this.splitInvitedUsers(invite[2])
@@ -948,6 +955,14 @@ class InviteStatsService {
     this.afterScanSuccess = callback
   }
 
+  setBackgroundTaskBlocker(blocker: (() => boolean) | null): void {
+    this.backgroundTaskBlocker = blocker
+  }
+
+  private isBackgroundTaskBlocked(): boolean {
+    return this.backgroundTaskBlocker?.() === true
+  }
+
   private notifyAfterScanSuccess(): void {
     if (!this.afterScanSuccess) return
     Promise.resolve(this.afterScanSuccess()).catch((error) => {
@@ -980,11 +995,48 @@ class InviteStatsService {
     return data.quitEvents.filter((event) => this.isEventInCurrentTag(data, event, tagId))
   }
 
-  private getGroupLastRawCreatedTime(data: InviteStatsScopeData, groupId: string): number {
-    return data.rawEvents.reduce((max, event) => {
-      if (event.group_id !== groupId) return max
-      return Math.max(max, event.created_time || event.source_create_time || event.invite_time || event.exit_time || 0)
+  private getRawEventFallbackTime(event: Partial<InviteRawEvent>): number {
+    return Math.max(
+      0,
+      Number(event.created_time || 0),
+      Number(event.source_create_time || 0),
+      Number(event.invite_time || 0),
+      Number(event.exit_time || 0)
+    )
+  }
+
+  private ensureRawEventTimestamps(data: InviteStatsScopeData): boolean {
+    let changed = false
+    for (const event of data.rawEvents) {
+      const fallbackTime = this.getRawEventFallbackTime(event)
+      if (!Number(event.created_at || 0) && fallbackTime > 0) {
+        event.created_at = fallbackTime
+        changed = true
+      }
+      if (!Number(event.updated_at || 0) && fallbackTime > 0) {
+        event.updated_at = fallbackTime
+        changed = true
+      }
+    }
+    return changed
+  }
+
+  private getGroupRawEvents(data: InviteStatsScopeData, groupId: string): InviteRawEvent[] {
+    return data.rawEvents.filter((event) => event.group_id === groupId)
+  }
+
+  private getGroupLastRawUpdatedAt(data: InviteStatsScopeData, groupId: string): number {
+    return this.getGroupRawEvents(data, groupId).reduce((max, event) => {
+      return Math.max(max, Number(event.updated_at || 0))
     }, 0)
+  }
+
+  private advanceGroupRawUpdatedAt(data: InviteStatsScopeData, groupId: string, updatedAt: number): boolean {
+    const latest = this.getGroupRawEvents(data, groupId)
+      .sort((a, b) => Number(b.updated_at || 0) - Number(a.updated_at || 0))[0]
+    if (!latest || Number(latest.updated_at || 0) >= updatedAt) return false
+    this.markSyncDirty(latest, updatedAt)
+    return true
   }
 
   private upsertRawEventFromInvite(data: InviteStatsScopeData, event: InviteEvent): boolean {
@@ -1211,7 +1263,7 @@ class InviteStatsService {
 
   private hydrateEventIdentityBindings(data: InviteStatsScopeData): boolean {
     let changed = false
-    const now = this.nowSeconds()
+    const now = event.updated_at || this.nowSeconds()
     for (const event of data.inviteEvents) {
       if (!event.wx_id) {
         const wxId = this.findManualBinding(data, event.group_id, event.user)
@@ -1856,7 +1908,7 @@ class InviteStatsService {
 
   markCurrentScopeSyncResult(success: boolean, errorMessage = '', snapshot?: InviteSyncSnapshot): void {
     const data = this.getScope()
-    const now = this.nowSeconds()
+    const now = event.updated_at || this.nowSeconds()
     const markRows = <T extends { sync_status?: string; sync_error?: string; last_sync_at?: number; updated_at?: number; finished_at?: number; started_at?: number }>(
       rows: T[],
       bucket: keyof InviteSyncSnapshot,
@@ -2278,12 +2330,15 @@ class InviteStatsService {
         if (!result.success || !Array.isArray(result.rows)) continue
 
         const messages = chatService.mapRowsToMessagesForApi(result.rows as Record<string, any>[], binding.group_id)
-        const scanStart = this.getGroupLastRawCreatedTime(data, binding.group_id)
+        const hasGroupRawEvents = this.getGroupRawEvents(data, binding.group_id).length > 0
+        const scanStart = this.getGroupLastRawUpdatedAt(data, binding.group_id)
         let lastInviteTime = binding.last_invite_time || this.getGroupLastInviteTime(data, tagId, binding.group_id) || 0
         let lastMessageId = binding.last_message_id || ''
+        let groupAddedRawEvent = false
 
         for (const message of messages) {
-          if (scanStart > 0 && message.createTime < scanStart) continue
+          if (scanStart > 0 && message.createTime <= scanStart) continue
+          if (message.createTime > startedAt) continue
           log.scanned_messages += 1
           if (this.activeScanState) this.activeScanState.scannedMessageCount = log.scanned_messages
 
@@ -2294,7 +2349,11 @@ class InviteStatsService {
           for (const parsed of parsedEvents) {
             if (parsed.type === 'join') {
               const event = this.buildInviteEvent(data, parsed, message, context, parsedContent)
+              event.created_at = startedAt
+              event.updated_at = startedAt
+              const rawCountBefore = data.rawEvents.length
               this.upsertRawEventFromInvite(data, event)
+              groupAddedRawEvent = groupAddedRawEvent || data.rawEvents.length > rawCountBefore
               if (!this.hasInviteEvent(data, event)) {
                 data.inviteEvents.push(event)
                 log.new_invites += 1
@@ -2304,7 +2363,11 @@ class InviteStatsService {
               }
             } else {
               const event = this.buildQuitEvent(data, parsed, message, context, parsedContent)
+              event.created_at = startedAt
+              event.updated_at = startedAt
+              const rawCountBefore = data.rawEvents.length
               this.upsertRawEventFromQuit(data, event)
+              groupAddedRawEvent = groupAddedRawEvent || data.rawEvents.length > rawCountBefore
               if (!this.hasQuitEvent(data, event)) {
                 data.quitEvents.push(event)
                 log.new_quits += 1
@@ -2316,10 +2379,14 @@ class InviteStatsService {
           }
         }
 
-        binding.last_scan_time = this.nowSeconds()
+        if (!groupAddedRawEvent && hasGroupRawEvents) {
+          this.advanceGroupRawUpdatedAt(data, binding.group_id, startedAt)
+        }
+
+        binding.last_scan_time = startedAt
         binding.last_invite_time = lastInviteTime
         binding.last_message_id = lastMessageId
-        this.markSyncDirty(binding)
+        this.markSyncDirty(binding, startedAt)
       }
 
       this.recomputeFlags(data)
@@ -2327,7 +2394,6 @@ class InviteStatsService {
       log.finished_at = this.nowSeconds()
       this.markSyncDirty(log, log.finished_at)
       this.persist()
-      this.notifyAfterScanSuccess()
       return { success: true, log }
     } catch (error) {
       log.status = 'failed'
@@ -2413,7 +2479,6 @@ class InviteStatsService {
       log.finished_at = this.nowSeconds()
       this.markSyncDirty(log, log.finished_at)
       this.persist()
-      this.notifyAfterScanSuccess()
       return { success: true, log }
     } catch (error) {
       log.status = 'failed'
@@ -2506,7 +2571,7 @@ class InviteStatsService {
   }
 
   async runBackgroundScan(): Promise<void> {
-    if (this.scanPromise) return
+    if (this.scanPromise || this.isBackgroundTaskBlocked()) return
     const data = this.getScope()
     const tagIds = data.activityTags
       .filter((tag) => tag.enabled && this.getEnabledBindingsForTag(data, tag.tag_id).length > 0)
@@ -2522,8 +2587,16 @@ class InviteStatsService {
     await this.scanPromise
   }
 
+  async ensureBackgroundScanComplete(): Promise<void> {
+    if (this.scanPromise) {
+      await this.scanPromise
+      return
+    }
+    await this.runBackgroundScan()
+  }
+
   async runBackgroundQuitCheck(): Promise<void> {
-    if (this.quitCheckPromise) return
+    if (this.quitCheckPromise || this.isBackgroundTaskBlocked()) return
     const data = this.getScope()
     const tagIds = data.activityTags
       .filter((tag) => tag.enabled && this.getEnabledBindingsForTag(data, tag.tag_id).length > 0)
@@ -2551,17 +2624,21 @@ class InviteStatsService {
     if (this.autoScanStarted) return
     this.autoScanStarted = true
     const firstScanTimer = setTimeout(() => {
+      this.autoScanTimer = null
       void this.runBackgroundScan()
+      if (!this.autoScanStarted) return
+      const intervalTimer = setInterval(() => {
+        void this.runBackgroundScan()
+      }, this.autoScanIntervalMs)
+      if (typeof intervalTimer.unref === 'function') intervalTimer.unref()
+      this.autoScanTimer = intervalTimer
     }, this.autoScanInitialDelayMs)
     if (typeof firstScanTimer.unref === 'function') firstScanTimer.unref()
-    this.autoScanTimer = setInterval(() => {
-      void this.runBackgroundScan()
-    }, this.autoScanIntervalMs)
-    if (typeof this.autoScanTimer.unref === 'function') this.autoScanTimer.unref()
+    this.autoScanTimer = firstScanTimer
   }
 
   stopAutoScanScheduler(): void {
-    if (this.autoScanTimer) clearInterval(this.autoScanTimer)
+    if (this.autoScanTimer) clearTimeout(this.autoScanTimer)
     this.autoScanTimer = null
     this.autoScanStarted = false
   }

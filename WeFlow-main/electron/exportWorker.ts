@@ -137,11 +137,25 @@ if (config.userDataPath) {
 }
 process.env.WEFLOW_PROJECT_NAME = process.env.WEFLOW_PROJECT_NAME || 'WeFlow'
 
+let workerWcdbService: { shutdown: () => Promise<void> } | null = null
+
+async function shutdownWorkerWcdb() {
+  if (!workerWcdbService) return
+  try {
+    await workerWcdbService.shutdown()
+  } catch (error) {
+    console.warn('[exportWorker] WCDB shutdown failed:', error)
+  } finally {
+    workerWcdbService = null
+  }
+}
+
 async function run() {
   const [{ wcdbService }, { exportService }] = await Promise.all([
     import('./services/wcdbService'),
     import('./services/exportService')
   ])
+  workerWcdbService = wcdbService
 
   wcdbService.setPaths(config.resourcesPath || '', config.userDataPath || '')
   wcdbService.setLogEnabled(config.logEnabled === true)
@@ -199,6 +213,7 @@ async function run() {
 
   flushProgress()
   flushCreatedPaths()
+  await shutdownWorkerWcdb()
 
   parentPort?.postMessage({
     type: 'export:result',
@@ -206,9 +221,10 @@ async function run() {
   })
 }
 
-run().catch((error) => {
+run().catch(async (error) => {
   flushProgress()
   flushCreatedPaths()
+  await shutdownWorkerWcdb()
   parentPort?.postMessage({
     type: 'export:error',
     error: String(error)
