@@ -224,7 +224,11 @@ export interface InviteDashboardData {
   recentActivities: InviteMemberTraceRow[]
   scanStatus: {
     running: boolean
+    scanRunning: boolean
+    quitCheckRunning: boolean
     active?: any
+    scanActive?: any
+    quitCheckActive?: any
     logs: InviteScanLog[]
   }
 }
@@ -1088,9 +1092,9 @@ export interface ElectronAPI {
     listGroups: () => Promise<InviteStatsResult<InviteStatsGroupRow[]>>
     setGroupTag: (groupId: string, tagId: string) => Promise<InviteStatsResult>
     clearGroupTag: (groupId: string) => Promise<InviteStatsResult>
-    scanActivity: (tagId: string) => Promise<{ success: boolean; started?: boolean; running?: boolean; log?: InviteScanLog; error?: string }>
-    checkQuitGroups: (tagId: string) => Promise<{ success: boolean; started?: boolean; running?: boolean; log?: InviteScanLog; error?: string }>
-    getScanStatus: () => Promise<InviteStatsResult<{ running: boolean; active?: any; logs: InviteScanLog[] }>>
+    scanActivity: (tagId: string) => Promise<{ success: boolean; started?: boolean; skipped?: boolean; running?: boolean; log?: InviteScanLog; error?: string }>
+    checkQuitGroups: (tagId: string) => Promise<{ success: boolean; started?: boolean; skipped?: boolean; running?: boolean; log?: InviteScanLog; error?: string }>
+    getScanStatus: () => Promise<InviteStatsResult<{ running: boolean; scanRunning: boolean; quitCheckRunning: boolean; active?: any; scanActive?: any; quitCheckActive?: any; logs: InviteScanLog[] }>>
     getDashboard: (input: {
       tagId: string
       startTime?: number
@@ -1137,6 +1141,7 @@ export interface ElectronAPI {
       success: boolean
       accountScope?: string
       counts?: Record<string, number>
+      skipped?: boolean
       error?: string
     }>
     resetAllData: (options?: { endpoint?: string; token?: string }) => Promise<{
