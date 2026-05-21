@@ -111,6 +111,7 @@ export async function getDashboard(filters: DashboardFilters): Promise<Dashboard
   const scopedQuitEvents = getScopedQuitEvents(events, groupBindings, filters.tagId)
   const groups = buildGroupsFromBindings(scopedBindings)
   const rankingEvents = scopedInviteEvents.filter(row => {
+    if (!isEffectiveInviteEvent(row)) return false
     if (filters.rankingGroupId && String(row.group_id || '') !== filters.rankingGroupId) return false
     return withinRange(row.invite_time, filters.rankingStart, filters.rankingEnd)
   })
@@ -338,7 +339,7 @@ function buildHourlyDistribution(events: FinalStatEvent[]) {
   const buckets = Array.from({ length: 24 }, (_, hour) => ({ hour, count: 0 }))
   events.forEach(row => {
     const date = toDate(row.invite_time)
-    if (date) buckets[date.getHours()].count += 1
+    if (date) buckets[getBeijingHour(date)].count += 1
   })
   return buckets
 }
@@ -509,8 +510,7 @@ function withinRange(value?: string | null, start?: string, end?: string) {
 function isToday(value?: string | null) {
   const date = toDate(value)
   if (!date) return false
-  const now = new Date()
-  return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate()
+  return beijingDateKey(date) === beijingDateKey(new Date())
 }
 
 function eventTime(row: FinalStatEvent) {
@@ -574,6 +574,23 @@ function toDate(value?: string | null) {
 
 function timeValue(value?: string | null) {
   return toDate(value)?.getTime() || 0
+}
+
+function getBeijingHour(date: Date) {
+  return Number(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    hour: '2-digit',
+    hour12: false
+  }).format(date)) % 24
+}
+
+function beijingDateKey(date: Date) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(date)
 }
 
 export function formatDateTime(value?: string | null) {
