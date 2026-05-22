@@ -132,18 +132,21 @@ export async function getDashboard(filters: DashboardFilters): Promise<Dashboard
     if (filters.rankingGroupId && String(row.group_id || '') !== filters.rankingGroupId) return false
     return withinRange(row.invite_time, filters.rankingStart, filters.rankingEnd)
   })
+  const totalMembers = sumBindingMemberCounts(scopedBindings)
+  const todayQuit = countTodayQuitMembers(scopedInviteEvents, scopedQuitEvents)
+  const quitTraceCount = [
+    ...scopedInviteEvents,
+    ...scopedQuitEvents
+  ].filter(row => toTraceStatus(row) === 'quit').length
 
   return {
     cards: {
       activeRobots: 0,
       monitoredGroups: groups.length,
-      totalMembers: sumBindingMemberCounts(scopedBindings),
-      totalMembersWithQuit: scopedInviteEvents.length,
+      totalMembers,
+      totalMembersWithQuit: totalMembers + quitTraceCount + todayQuit,
       todayNew: scopedInviteEvents.filter(row => isToday(row.invite_time)).length,
-      todayQuit: [
-        ...scopedQuitEvents.filter(row => row.status === 'confirmed' && isToday(eventTime(row))),
-        ...scopedInviteEvents.filter(row => row.status === 'confirmed' && row.delete_flag === 1 && isToday(eventTime(row)))
-      ].length,
+      todayQuit,
       pendingCount: [
         ...scopedInviteEvents,
         ...scopedQuitEvents
@@ -570,6 +573,17 @@ function buildGroupRanking(bindings: GroupTagBinding[]) {
 
 function sumBindingMemberCounts(bindings: GroupTagBinding[]) {
   return bindings.reduce((sum, row) => sum + normalizeCount(row.member_count), 0)
+}
+
+function countTodayQuitMembers(inviteEvents: FinalStatEvent[], quitEvents: FinalStatEvent[]) {
+  const members = new Set<string>()
+  quitEvents
+    .filter(row => row.status === 'confirmed' && isToday(eventTime(row)))
+    .forEach(row => members.add(memberKey(row) || `${row.group_id || ''}:${memberName(row)}:${eventTime(row) || ''}`))
+  inviteEvents
+    .filter(row => row.status === 'confirmed' && row.delete_flag === 1 && isToday(eventTime(row)))
+    .forEach(row => members.add(memberKey(row) || `${row.group_id || ''}:${memberName(row)}:${eventTime(row) || ''}`))
+  return members.size
 }
 
 function getScopedBindings(bindings: GroupTagBinding[], tagId?: string) {

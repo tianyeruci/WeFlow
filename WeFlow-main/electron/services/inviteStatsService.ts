@@ -1637,6 +1637,15 @@ class InviteStatsService {
     return event.invite_time || 0
   }
 
+  private isTraceQuitStatus(row: {
+    event_type: 'invite' | 'quit'
+    status?: InviteEventStatus
+    delete_flag?: number | null
+  }): boolean {
+    if (row.status === 'pending' || row.status === 'ignored') return false
+    return row.event_type === 'quit' || row.delete_flag === 1
+  }
+
   private getEffectiveInviteEvents(data: InviteStatsScopeData, tagId: string): InviteEvent[] {
     return this.getScopedInviteEvents(data, tagId)
       .filter((event) => event.status === 'confirmed' && event.valid_flag === 1 && this.getMemberKey(event))
@@ -1720,7 +1729,7 @@ class InviteStatsService {
     endTime?: number,
     minInviteCount = 0,
     groupId?: string,
-    dedupeMembers = true
+    dedupeMembers = false
   ): InviteRankingRow[] {
     const normalizedGroupId = normalizeText(groupId)
     const scopedEvents = this.getScopedInviteEvents(data, tagId)
@@ -2883,7 +2892,7 @@ class InviteStatsService {
       const data = this.getScope()
       let changed = this.recomputeFlags(data)
       const tagId = normalizeText(input.tagId) || ALL_ACTIVITY_TAG_ID
-      const dedupeMembers = input.dedupeMembers !== false
+      const dedupeMembers = input.dedupeMembers === true
       const tag = this.isAllActivityScope(tagId)
         ? undefined
         : data.activityTags.find((item) => item.tag_id === tagId)
@@ -2918,20 +2927,6 @@ class InviteStatsService {
             .filter(Boolean)
           ).size
         : groupMemberTotal
-      const totalMembers = input.includeQuitMembers
-        ? (dedupeMembers
-            ? new Set(inviteEventsForDashboard
-                .filter((event) => event.status === 'confirmed')
-                .map((event) => this.getMemberKey(event))
-                .filter(Boolean)
-              ).size
-            : inviteEventsForDashboard.length)
-        : activeMemberCount
-
-      const todayInviteEvents = this.filterByTime(inviteEventsForDashboard, todayStart, todayEnd)
-      const todayNewCount = dedupeMembers
-        ? new Set(todayInviteEvents.map((event) => this.getMemberKey(event)).filter(Boolean)).size
-        : todayInviteEvents.length
       const todayQuitMembers = new Set<string>()
       for (const event of scopedQuitEvents) {
         if (event.status !== 'confirmed' || event.quit_time < todayStart || event.quit_time > todayEnd) continue
@@ -2943,6 +2938,28 @@ class InviteStatsService {
         todayQuitMembers.add(this.getMemberKey(event) || (event.group_id + ':' + event.user + ':' + traceTime))
       }
       const todayQuitCount = todayQuitMembers.size
+      const quitTraceCount = scopedInviteEvents.filter((event) => this.isTraceQuitStatus({
+        event_type: 'invite',
+        status: event.status,
+        delete_flag: event.delete_flag
+      })).length + scopedQuitEvents.filter((event) => this.isTraceQuitStatus({
+        event_type: 'quit',
+        status: event.status
+      })).length
+      const totalMembers = input.includeQuitMembers
+        ? (dedupeMembers
+            ? new Set(inviteEventsForDashboard
+                .filter((event) => event.status === 'confirmed')
+                .map((event) => this.getMemberKey(event))
+                .filter(Boolean)
+              ).size
+            : groupMemberTotal + quitTraceCount + todayQuitCount)
+        : activeMemberCount
+
+      const todayInviteEvents = this.filterByTime(inviteEventsForDashboard, todayStart, todayEnd)
+      const todayNewCount = dedupeMembers
+        ? new Set(todayInviteEvents.map((event) => this.getMemberKey(event)).filter(Boolean)).size
+        : todayInviteEvents.length
       const activeBotCount = normalizeText(this.configService.getMyWxidCleaned()) ? 1 : 0
 
       const hourlyBuckets: Record<number, number> = {}
@@ -3389,7 +3406,7 @@ class InviteStatsService {
   }): Promise<{ success: boolean; count?: number; error?: string }> {
     try {
       const data = this.getScope()
-      const rows = this.buildInviteRanking(data, payload.tagId, payload.startTime, payload.endTime, payload.minInviteCount, payload.groupId, payload.dedupeMembers !== false)
+      const rows = this.buildInviteRanking(data, payload.tagId, payload.startTime, payload.endTime, payload.minInviteCount, payload.groupId, payload.dedupeMembers === true)
       const headers = ['排名', '活动标签', '邀请人', '邀请人 wxid', '邀请人数', '关联群数量', '最近邀请时间']
       const tagName = data.activityTags.find((tag) => tag.tag_id === payload.tagId)?.tag_name || ''
       const body = rows.map((row) => [
