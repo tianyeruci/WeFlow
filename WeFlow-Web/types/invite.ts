@@ -74,6 +74,9 @@ export type MemberTraceData = {
   rows: MemberTraceRow[]
   total: number
   groups: GroupOption[]
+  limit?: number
+  offset?: number
+  hasMore?: boolean
 }
 
 export type ApiError = {

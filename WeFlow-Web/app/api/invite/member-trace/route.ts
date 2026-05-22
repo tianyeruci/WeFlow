@@ -18,7 +18,9 @@ export async function GET(request: NextRequest) {
       endTime: params.get('endTime') || undefined,
       status: params.get('status') || undefined,
       attribution: params.get('attribution') || undefined,
-      includeQuit: params.get('includeQuit') !== 'false'
+      includeQuit: params.get('includeQuit') !== 'false',
+      limit: boundedNumber(params.get('limit'), 200, 1, 500),
+      offset: boundedNumber(params.get('offset'), 0, 0, 1000000)
     })
     return NextResponse.json({ trace })
   } catch (error) {
@@ -27,4 +29,10 @@ export async function GET(request: NextRequest) {
     }
     return NextResponse.json({ error: 'Failed to load member trace' }, { status: 500 })
   }
+}
+
+function boundedNumber(value: string | null, fallback: number, min: number, max: number) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return fallback
+  return Math.min(max, Math.max(min, Math.floor(numeric)))
 }
