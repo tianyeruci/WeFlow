@@ -35,6 +35,7 @@ class InviteStatsSyncService {
   private readonly remoteRefreshIntervalMs = 5 * 1000
   private readonly remoteRefreshCooldownMs = 30 * 1000
   private readonly remoteRefreshScanWaitMs = 10 * 1000
+  private readonly remoteRefreshRequestMaxAgeMs = 2 * 60 * 1000
   private readonly maxBatchPayloadBytes = 900 * 1024
   private lastSuccessfulSyncAtMs = 0
   private syncTaskBlocker: (() => boolean) | null = null
@@ -242,7 +243,7 @@ class InviteStatsSyncService {
           Authorization: `Bearer ${token}`
         }
       }, 'Peek remote refresh request')
-      const latestPayload = await this.readResponse(latestResponse) as { requestId?: number | null; error?: string } | null
+      const latestPayload = await this.readResponse(latestResponse) as { requestId?: number | null; requestedAt?: string | null; error?: string } | null
       if (!latestResponse.ok) {
         console.warn('[InviteStatsSync] Remote refresh peek failed:', latestPayload?.error || latestResponse.status)
         return
@@ -250,6 +251,7 @@ class InviteStatsSyncService {
 
       const latestRequestId = Number(latestPayload?.requestId || 0)
       if (!latestRequestId) return
+      if (!this.isRemoteRefreshRequestFresh(latestPayload?.requestedAt)) return
       if (this.syncPromise || this.isSyncTaskBlocked() || this.isRemoteRefreshCooldownActive()) return
 
       const nextEndpoint = this.resolveSyncRequestEndpoint(endpoint, '/next')
@@ -259,7 +261,7 @@ class InviteStatsSyncService {
           Authorization: `Bearer ${token}`
         }
       }, '轮询远程刷新请求')
-      const payload = await this.readResponse(response) as { requestId?: number | null; error?: string } | null
+      const payload = await this.readResponse(response) as { requestId?: number | null; requestedAt?: string | null; error?: string } | null
       if (!response.ok) {
         console.warn('[InviteStatsSync] Remote refresh polling failed:', payload?.error || response.status)
         return
@@ -267,6 +269,14 @@ class InviteStatsSyncService {
 
       const requestId = Number(payload?.requestId || 0)
       if (!requestId) return
+      if (!this.isRemoteRefreshRequestFresh(payload?.requestedAt)) {
+        await this.completeRemoteRefreshRequest(endpoint, token, requestId, {
+          success: false,
+          skipped: true,
+          error: '远程刷新请求已过期，已跳过'
+        })
+        return
+      }
 
       await inviteStatsService.ensureBackgroundScanComplete(this.remoteRefreshScanWaitMs)
       const result = await this.queueSync({ endpoint, token, full: true })
@@ -281,6 +291,11 @@ class InviteStatsSyncService {
   private isRemoteRefreshCooldownActive(): boolean {
     return this.lastSuccessfulSyncAtMs > 0 &&
       Date.now() - this.lastSuccessfulSyncAtMs < this.remoteRefreshCooldownMs
+  }
+
+  private isRemoteRefreshRequestFresh(requestedAt?: string | null): boolean {
+    const startedAt = Date.parse(String(requestedAt || ''))
+    return Number.isFinite(startedAt) && Date.now() - startedAt <= this.remoteRefreshRequestMaxAgeMs
   }
 
   private async completeRemoteRefreshRequest(

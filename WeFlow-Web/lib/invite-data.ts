@@ -104,6 +104,7 @@ type GroupExportFile = {
 }
 
 const ALL_ACTIVITY_TAG_ID = '__all__'
+const UNKNOWN_INVITER_NAME = '未知来源'
 
 export async function listActivityTags(): Promise<ActivityTag[]> {
   const rows = await supabaseSelect<AnyRecord>('activity_tags', { select: '*' })
@@ -283,6 +284,14 @@ export async function getBatchGroupMemberExportFiles(filters: GroupReleaseFilter
 }
 
 async function loadFinalEvents(tagId?: string) {
+  const [compatibilityEvents, finalEvents] = await Promise.all([
+    loadCompatibilityEvents(tagId),
+    loadFinalStatEvents(tagId).catch(() => [])
+  ])
+  return mergeEventRows([...compatibilityEvents, ...finalEvents])
+}
+
+async function loadFinalStatEvents(tagId?: string) {
   const query: Record<string, string | number> = {
     select: '*',
     order: 'id.asc'
@@ -291,6 +300,111 @@ async function loadFinalEvents(tagId?: string) {
   if (tagId && tagId !== ALL_ACTIVITY_TAG_ID) query.activity_tag_id = `eq.${tagId}`
 
   return supabaseSelectAll<FinalStatEvent>('final_stat_events', query)
+}
+
+async function loadCompatibilityEvents(tagId?: string) {
+  const query: Record<string, string | number> = {
+    select: '*',
+    order: 'id.asc'
+  }
+  if (tagId && tagId !== ALL_ACTIVITY_TAG_ID) query.activity_tag_id = `eq.${tagId}`
+
+  const [inviteRows, quitRows] = await Promise.all([
+    supabaseSelectAll<AnyRecord>('invite_events', query),
+    supabaseSelectAll<AnyRecord>('quit_events', query)
+  ])
+
+  return [
+    ...inviteRows.map(normalizeInviteEventRow),
+    ...quitRows.map(normalizeQuitEventRow)
+  ]
+}
+
+function normalizeInviteEventRow(row: AnyRecord): FinalStatEvent {
+  const raw = rawJsonRecord(row.raw_json) || {}
+  const id = textValue(row.id, raw.id)
+  const memberWxid = textValue(row.member_wxid, row.wx_id, row.wxid, raw.wx_id, raw.wxid, raw.member_wxid)
+  const inviter = textValue(row.inviter_name, row.inviter, raw.inviter, raw.inviter_name, raw.related_name)
+  const inviterWxid = textValue(row.inviter_wxid, row.inviter_wx_id, raw.inviter_wx_id, raw.inviter_wxid, raw.related_wxid)
+  const joinType = textValue(row.join_type, raw.join_type) || (inviter || inviterWxid ? 'invite' : 'qrcode')
+
+  return {
+    event_id: id,
+    id,
+    activity_tag_id: textValue(row.activity_tag_id, raw.activity_tag_id),
+    activity_tag_name: textValue(row.activity_tag_name, raw.activity_tag_name),
+    group_id: textValue(row.group_id, raw.group_id),
+    group_name: textValue(row.group_name, raw.group_name),
+    event_type: 'invite',
+    user: textValue(row.member_name, row.user, raw.user, raw.member_name),
+    member_name: textValue(row.member_name, row.user, raw.user, raw.member_name),
+    wx_id: memberWxid,
+    wxid: memberWxid,
+    head_img: textValue(row.head_img, row.avatar_url, raw.head_img, raw.avatar_url, raw.avatarUrl),
+    avatar_url: textValue(row.avatar_url, raw.avatar_url, raw.avatarUrl),
+    inviter,
+    inviter_name: inviter,
+    inviter_wx_id: inviterWxid,
+    inviter_wxid: inviterWxid,
+    join_type: joinType,
+    invite_time: dateTextValue(row.invite_time, raw.invite_time, row.created_time, raw.created_time),
+    exit_time: dateTextValue(row.exit_time, raw.exit_time),
+    created_time: dateTextValue(row.created_time, raw.created_time, row.invite_time, raw.invite_time),
+    status: textValue(row.status, raw.status) || 'confirmed',
+    valid_flag: numberValue(row.valid_flag, raw.valid_flag),
+    delete_flag: numberValue(row.delete_flag, raw.delete_flag),
+    raw_content: textValue(row.raw_message, row.raw_content, raw.raw_content, raw.raw_message),
+    source_raw_content: textValue(row.raw_message, row.raw_content, raw.raw_content, raw.raw_message),
+    raw_json: row.raw_json,
+    updated_at: dateTextValue(row.updated_at, raw.updated_at)
+  }
+}
+
+function normalizeQuitEventRow(row: AnyRecord): FinalStatEvent {
+  const raw = rawJsonRecord(row.raw_json) || {}
+  const id = textValue(row.id, raw.id)
+  const memberWxid = textValue(row.member_wxid, row.wx_id, row.wxid, raw.wx_id, raw.wxid, raw.member_wxid)
+  const operator = textValue(row.operator_name, row.operator, raw.operator, raw.operator_name, raw.related_name)
+  const operatorWxid = textValue(row.operator_wxid, row.operator_wx_id, raw.operator_wx_id, raw.operator_wxid, raw.related_wxid)
+
+  return {
+    event_id: id,
+    id,
+    activity_tag_id: textValue(row.activity_tag_id, raw.activity_tag_id),
+    activity_tag_name: textValue(row.activity_tag_name, raw.activity_tag_name),
+    group_id: textValue(row.group_id, raw.group_id),
+    group_name: textValue(row.group_name, raw.group_name),
+    event_type: 'quit',
+    user: textValue(row.member_name, row.user, raw.user, raw.member_name),
+    member_name: textValue(row.member_name, row.user, raw.user, raw.member_name),
+    wx_id: memberWxid,
+    wxid: memberWxid,
+    head_img: textValue(row.head_img, row.avatar_url, raw.head_img, raw.avatar_url, raw.avatarUrl),
+    avatar_url: textValue(row.avatar_url, raw.avatar_url, raw.avatarUrl),
+    operator_name: operator,
+    operator_wxid: operatorWxid,
+    invite_time: dateTextValue(row.invite_time, raw.invite_time),
+    exit_time: dateTextValue(row.exit_time, row.quit_time, raw.quit_time, raw.exit_time, row.created_time, raw.created_time),
+    created_time: dateTextValue(row.created_time, raw.created_time, row.exit_time, raw.exit_time),
+    status: textValue(row.status, raw.status) || 'confirmed',
+    valid_flag: numberValue(row.valid_flag, raw.valid_flag),
+    delete_flag: numberValue(row.delete_flag, raw.delete_flag, 1),
+    quit_type: textValue(row.quit_type, raw.quit_type) || 'unknown',
+    raw_content: textValue(row.raw_message, row.raw_content, raw.raw_content, raw.raw_message),
+    source_raw_content: textValue(row.raw_message, row.raw_content, raw.raw_content, raw.raw_message),
+    raw_json: row.raw_json,
+    updated_at: dateTextValue(row.updated_at, raw.updated_at)
+  }
+}
+
+function mergeEventRows(rows: FinalStatEvent[]) {
+  const merged = new Map<string, FinalStatEvent>()
+  rows.forEach(row => {
+    const key = String(row.event_id || row.id || `${row.event_type || ''}:${row.group_id || ''}:${memberKey(row)}:${eventTime(row) || ''}`)
+    if (!key || merged.has(key)) return
+    merged.set(key, row)
+  })
+  return Array.from(merged.values())
 }
 
 async function loadGroupBindings(tagId?: string) {
@@ -431,9 +545,10 @@ function resolveInviterIdentity(row: FinalStatEvent, lookup: ReturnType<typeof b
       wxid: wxid || normalizeIdentity(mapping.wxid)
     }
   }
+  const fallbackName = name || wxid || UNKNOWN_INVITER_NAME
   return {
-    key: wxid ? `wxid:${wxid}` : `name:${normalizeIdentity(name)}`,
-    name: name || wxid,
+    key: wxid ? `wxid:${wxid}` : `name:${normalizeIdentity(fallbackName) || 'unknown'}`,
+    name: fallbackName,
     wxid
   }
 }
@@ -518,6 +633,10 @@ function memberKey(row: FinalStatEvent) {
     String(row.event_id || row.id || '')
 }
 
+function memberWxId(row: FinalStatEvent) {
+  return normalizeIdentity(row.wx_id || row.wxid)
+}
+
 function normalizeIdentity(value: unknown) {
   return String(value || '').trim().toLowerCase()
 }
@@ -527,7 +646,7 @@ function memberName(row: FinalStatEvent) {
 }
 
 function inviterName(row: FinalStatEvent) {
-  return String(row.inviter || row.inviter_name || '未知来源')
+  return String(row.inviter || row.inviter_name || UNKNOWN_INVITER_NAME)
 }
 
 function inviterWxId(row: FinalStatEvent) {
@@ -539,10 +658,14 @@ function isKnownInviterName(value: unknown) {
   return Boolean(normalized) && normalized !== '未知来源' && normalized !== 'unknown' && normalized !== '鏈煡鏉ユ簮'
 }
 
+function isInviteTraceRow(row: FinalStatEvent) {
+  return isInviteEvent(row) && row.join_type !== 'direct' && isVisibleForTrace(row)
+}
+
 function isRankableInviteEvent(row: FinalStatEvent, dedupeMembers: boolean) {
-  if (!isInviteEvent(row) || row.join_type === 'direct') return false
-  if (dedupeMembers && (row.status !== 'confirmed' || row.valid_flag !== 1 || row.delete_flag === 1 || !memberKey(row))) return false
-  return Boolean(inviterWxId(row) || isKnownInviterName(inviterName(row)))
+  if (!isInviteTraceRow(row)) return false
+  if (dedupeMembers && (row.status !== 'confirmed' || row.valid_flag !== 1 || toTraceStatus(row) !== 'active' || !memberWxId(row))) return false
+  return true
 }
 
 function operatorName(row: FinalStatEvent) {
@@ -649,6 +772,38 @@ function rawJsonRecord(value: unknown): AnyRecord | null {
   } catch {
     return null
   }
+}
+
+function textValue(...values: unknown[]) {
+  for (const value of values) {
+    const text = String(value ?? '').trim()
+    if (text) return text
+  }
+  return ''
+}
+
+function numberValue(...values: unknown[]) {
+  for (const value of values) {
+    if (value === null || value === undefined || value === '') continue
+    const numeric = Number(value)
+    if (Number.isFinite(numeric)) return numeric
+  }
+  return 0
+}
+
+function dateTextValue(...values: unknown[]) {
+  for (const value of values) {
+    if (value === null || value === undefined || value === '') continue
+    const numeric = Number(value)
+    if (Number.isFinite(numeric) && numeric > 0) {
+      const milliseconds = numeric > 100000000000 ? numeric : numeric * 1000
+      return new Date(milliseconds).toISOString()
+    }
+    if (Number.isFinite(numeric)) continue
+    const text = String(value).trim()
+    if (text && Number.isFinite(Date.parse(text))) return text
+  }
+  return null
 }
 
 function joinTypeText(row: FinalStatEvent) {
