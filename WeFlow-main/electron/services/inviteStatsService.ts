@@ -350,6 +350,7 @@ const createEmptyScope = (): InviteStatsScopeData => ({
 const normalizeText = (value: unknown): string => String(value || '').trim()
 const normalizeIdentityText = (value: unknown): string => normalizeText(value).replace(/\s+/g, ' ').toLowerCase()
 const ALL_ACTIVITY_TAG_ID = '__all__'
+const UNKNOWN_INVITER_NAME = '未知来源'
 
 class InviteStatsService {
   private readonly fileVersion = 1
@@ -914,6 +915,22 @@ class InviteStatsService {
       const key = this.getMemberKey(event)
       if (!key || buckets.has(key)) continue
       buckets.set(key, event)
+    }
+    return Array.from(buckets.values())
+  }
+
+  private dedupeInviteEventsByMemberWxId(events: InviteEvent[]): InviteEvent[] {
+    const buckets = new Map<string, InviteEvent>()
+    for (const event of events.slice().sort((a, b) => {
+      const inviteDiff = a.invite_time - b.invite_time
+      if (inviteDiff !== 0) return inviteDiff
+      const sourceDiff = a.source_create_time - b.source_create_time
+      if (sourceDiff !== 0) return sourceDiff
+      return String(a.source_message_id || a.id).localeCompare(String(b.source_message_id || b.id))
+    })) {
+      const wxid = this.getMemberWxId(event)
+      if (!wxid || buckets.has(wxid)) continue
+      buckets.set(wxid, event)
     }
     return Array.from(buckets.values())
   }
@@ -1611,6 +1628,10 @@ class InviteStatsService {
       normalizeIdentityText(event.user || event.member_name || '')
   }
 
+  private getMemberWxId(event: { wx_id?: string; member_wxid?: string }): string {
+    return this.cleanAccountDirName(normalizeText(event.wx_id || event.member_wxid || ''))
+  }
+
   private getInviteEventTimelineTime(event: InviteEvent): number {
     if (event.delete_flag === 1) return event.updated_at || event.invite_time || 0
     return event.invite_time || 0
@@ -1631,10 +1652,14 @@ class InviteStatsService {
     return Boolean(normalized) && normalized !== '未知来源' && normalized !== 'unknown' && normalized !== '鏈煡鏉ユ簮'
   }
 
+  private isInviteTraceEvent(event: InviteEvent): boolean {
+    return event.join_type !== 'direct'
+  }
+
   private isRankableInviteEvent(event: InviteEvent, dedupeMembers: boolean): boolean {
-    if (event.join_type === 'direct') return false
-    if (dedupeMembers && (event.status !== 'confirmed' || event.valid_flag !== 1 || event.delete_flag === 1 || !this.getMemberKey(event))) return false
-    return Boolean(this.getInviterWxId(event) || this.isKnownInviterName(event.inviter))
+    if (!this.isInviteTraceEvent(event)) return false
+    if (dedupeMembers && (event.status !== 'confirmed' || event.valid_flag !== 1 || event.delete_flag === 1 || !this.getMemberWxId(event))) return false
+    return true
   }
 
   private buildInviterMappingLookup(data: InviteStatsScopeData) {
@@ -1665,9 +1690,10 @@ class InviteStatsService {
         wxid: wxid || this.cleanAccountDirName(normalizeText(mapping.wxid))
       }
     }
+    const fallbackName = inviterName || wxid || UNKNOWN_INVITER_NAME
     return {
-      key: wxid ? `wxid:${wxid}` : `name:${normalizeIdentityText(inviterName)}`,
-      name: inviterName || wxid,
+      key: wxid ? `wxid:${wxid}` : `name:${normalizeIdentityText(fallbackName) || 'unknown'}`,
+      name: fallbackName,
       wxid
     }
   }
@@ -1700,7 +1726,7 @@ class InviteStatsService {
     const scopedEvents = this.getScopedInviteEvents(data, tagId)
     const filteredEvents = this.filterByTime(scopedEvents, startTime, endTime)
       .filter((event) => (!normalizedGroupId || event.group_id === normalizedGroupId) && this.isRankableInviteEvent(event, dedupeMembers))
-    const effective = dedupeMembers ? this.dedupeInviteEventsByMemberKey(filteredEvents) : filteredEvents
+    const effective = dedupeMembers ? this.dedupeInviteEventsByMemberWxId(filteredEvents) : filteredEvents
     const lookup = this.buildInviterMappingLookup(data)
     const buckets = new Map<string, { inviter: string; wxids: Set<string>; users: Set<string>; groups: Set<string>; count: number; recent: number }>()
     for (const event of effective) {
@@ -1717,8 +1743,8 @@ class InviteStatsService {
       }
       if (wxid) bucket.wxids.add(wxid)
       if (dedupeMembers) {
-        const memberKey = this.getMemberKey(event)
-        if (memberKey) bucket.users.add(memberKey)
+        const memberWxid = this.getMemberWxId(event)
+        if (memberWxid) bucket.users.add(memberWxid)
       } else {
         bucket.count += 1
       }
