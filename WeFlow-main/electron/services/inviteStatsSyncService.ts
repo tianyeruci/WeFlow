@@ -62,6 +62,7 @@ class InviteStatsSyncService {
 
       const { payload, snapshot } = await inviteStatsService.exportCurrentScopeSyncPayload({ dirtyOnly: options.full !== true })
       if (this.isPayloadEmpty(payload)) {
+        await this.refreshInviterIdentityMappings(endpoint, token, payload.accountScope)
         return {
           success: true,
           accountScope: payload.accountScope,
@@ -85,6 +86,7 @@ class InviteStatsSyncService {
       }
 
       inviteStatsService.markCurrentScopeSyncResult(true, '', snapshot)
+      await this.refreshInviterIdentityMappings(endpoint, token, payload.accountScope)
       return {
         success: true,
         accountScope: payload.accountScope,
@@ -375,6 +377,43 @@ class InviteStatsSyncService {
       return url.toString()
     } catch {
       return endpoint.replace(/\/sync(\?.*)?$/, `/sync-request${suffix}`)
+    }
+  }
+
+  private resolveInviteEndpoint(endpoint: string, routeName: string) {
+    try {
+      const url = new URL(endpoint)
+      if (/\/api\/invite\/[^/]+\/?$/.test(url.pathname)) {
+        url.pathname = url.pathname.replace(/\/api\/invite\/[^/]+\/?$/, `/api/invite/${routeName}`)
+      } else {
+        url.pathname = `${url.pathname.replace(/\/$/, '')}/${routeName}`
+      }
+      url.search = ''
+      return url.toString()
+    } catch {
+      return endpoint.replace(/\/sync(\?.*)?$/, `/${routeName}$1`)
+    }
+  }
+
+  private async refreshInviterIdentityMappings(endpoint: string, token: string, accountScope: string): Promise<void> {
+    try {
+      const url = new URL(this.resolveInviteEndpoint(endpoint, 'inviter-mappings'))
+      url.searchParams.set('accountScope', accountScope)
+      const response = await this.fetchWithRetry(url.toString(), {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      }, '拉取邀请人身份映射')
+      if (response.status === 404) return
+      const payload = await this.readResponse(response) as { mappings?: Array<Record<string, unknown>>; error?: string } | null
+      if (!response.ok) {
+        console.warn('[InviteStatsSync] Failed to load inviter mappings:', payload?.error || response.status)
+        return
+      }
+      inviteStatsService.replaceCurrentScopeInviterIdentityMappings(payload?.mappings || [])
+    } catch (error) {
+      console.warn('[InviteStatsSync] Failed to refresh inviter mappings:', error)
     }
   }
 
