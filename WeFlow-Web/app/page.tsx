@@ -8,6 +8,7 @@ type ChartMode = 'bar' | 'pie'
 const DASHBOARD_POLL_INTERVAL_MS = 10000
 const REFRESH_COOLDOWN_SECONDS = 15
 const GROUP_RANK_PAGE_SIZE = 10
+const TRACE_PAGE_SIZE = 200
 const rankingImageColors = ['#59b8ad', '#e3c763', '#e75a6c', '#ffd8b4', '#5b9bea', '#87cba2', '#f28a42', '#586aa5', '#bf7bd7']
 
 function downloadRankingImage(input: {
@@ -195,7 +196,10 @@ const emptyDashboard: DashboardData = {
 const emptyTrace: MemberTraceData = {
   rows: [],
   total: 0,
-  groups: []
+  groups: [],
+  limit: TRACE_PAGE_SIZE,
+  offset: 0,
+  hasMore: false
 }
 
 const ALL_ACTIVITY_TAG_ID = '__all__'
@@ -203,7 +207,7 @@ const ALL_ACTIVITY_TAG_ID = '__all__'
 export default function RemoteViewerPage() {
   const [view, setView] = useState<ViewKey>('dashboard')
   const [tags, setTags] = useState<ActivityTag[]>([])
-  const [selectedTagId, setSelectedTagId] = useState(ALL_ACTIVITY_TAG_ID)
+  const [selectedTagId, setSelectedTagId] = useState('')
   const [dashboard, setDashboard] = useState<DashboardData>(emptyDashboard)
   const [trace, setTrace] = useState<MemberTraceData>(emptyTrace)
   const [rankingGroupId, setRankingGroupId] = useState('')
@@ -217,6 +221,7 @@ export default function RemoteViewerPage() {
   const [traceEnd, setTraceEnd] = useState('')
   const [traceStatus, setTraceStatus] = useState('')
   const [traceAttribution, setTraceAttribution] = useState('')
+  const [tracePage, setTracePage] = useState(0)
   const [rawMessage, setRawMessage] = useState('')
   const [loading, setLoading] = useState(false)
   const [exportingAction, setExportingAction] = useState('')
@@ -230,6 +235,7 @@ export default function RemoteViewerPage() {
     () => selectedTagId === ALL_ACTIVITY_TAG_ID ? undefined : tags.find(tag => tag.id === selectedTagId),
     [tags, selectedTagId]
   )
+  const orderedTags = useMemo(() => orderActivityTags(tags), [tags])
   const isAllActivitySelected = selectedTagId === ALL_ACTIVITY_TAG_ID
   const selectedScopeLabel = isAllActivitySelected ? '全部活动' : (selectedTag?.name || '当前活动')
   const selectedScopeFileLabel = isAllActivitySelected ? '全部活动' : (selectedTag?.name || '活动')
@@ -251,7 +257,7 @@ export default function RemoteViewerPage() {
     try {
       const payload = await apiGet<{ tags: ActivityTag[] }>('/api/invite/tags')
       setTags(payload.tags)
-      const defaultTag = payload.tags.find(tag => tag.name === '拉新')
+      const defaultTag = preferredActivityTag(payload.tags)
       setSelectedTagId(current => {
         if (current && current !== ALL_ACTIVITY_TAG_ID) {
           const stillExists = payload.tags.some(tag => tag.id === current)
@@ -267,7 +273,8 @@ export default function RemoteViewerPage() {
   }, [apiGet])
 
   const loadDashboard = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
-    const tagId = selectedTagId || ALL_ACTIVITY_TAG_ID
+    if (!selectedTagId) return
+    const tagId = selectedTagId
     const params = new URLSearchParams({ tagId })
     if (rankingGroupId) params.set('rankingGroupId', rankingGroupId)
     if (rankingStart) params.set('rankingStart', toAbsoluteDateTimeParam(rankingStart))
@@ -294,7 +301,8 @@ export default function RemoteViewerPage() {
   }, [apiGet, rankingEnd, rankingGroupId, rankingStart, selectedTagId])
 
   const loadTrace = useCallback(async () => {
-    const tagId = selectedTagId || ALL_ACTIVITY_TAG_ID
+    if (!selectedTagId) return
+    const tagId = selectedTagId
     const params = new URLSearchParams({ tagId })
     if (traceGroupId) params.set('groupId', traceGroupId)
     if (traceKeyword.trim()) params.set('keyword', traceKeyword.trim())
@@ -302,6 +310,8 @@ export default function RemoteViewerPage() {
     if (traceEnd) params.set('endTime', traceEnd)
     if (traceStatus) params.set('status', traceStatus)
     if (traceAttribution) params.set('attribution', traceAttribution)
+    params.set('limit', String(TRACE_PAGE_SIZE))
+    params.set('offset', String(tracePage * TRACE_PAGE_SIZE))
 
     setLoading(true)
     setError('')
@@ -314,15 +324,15 @@ export default function RemoteViewerPage() {
     } finally {
       setLoading(false)
     }
-  }, [apiGet, selectedTagId, traceAttribution, traceEnd, traceGroupId, traceKeyword, traceStart, traceStatus])
+  }, [apiGet, selectedTagId, traceAttribution, traceEnd, traceGroupId, traceKeyword, tracePage, traceStart, traceStatus])
 
   useEffect(() => {
     void loadTags()
   }, [loadTags])
 
   useEffect(() => {
-    void loadDashboard()
-  }, [loadDashboard])
+    if (selectedTagId) void loadDashboard()
+  }, [loadDashboard, selectedTagId])
 
   useEffect(() => {
     if ((view !== 'dashboard' && view !== 'groups') || !selectedTagId) return
@@ -348,7 +358,13 @@ export default function RemoteViewerPage() {
 
   useEffect(() => {
     setGroupRankPage(1)
+    setRankingGroupId('')
+    setTraceGroupId('')
   }, [selectedTagId])
+
+  useEffect(() => {
+    setTracePage(0)
+  }, [selectedTagId, traceAttribution, traceEnd, traceGroupId, traceKeyword, traceStart, traceStatus])
 
   async function requestLatestData() {
     if (isRequestingLatestData || refreshCooldownRemaining > 0) return
@@ -492,6 +508,8 @@ export default function RemoteViewerPage() {
   const safeGroupRankPage = Math.min(groupRankPage, groupRankPageCount)
   const groupRankStart = (safeGroupRankPage - 1) * GROUP_RANK_PAGE_SIZE
   const groupRankRows = dashboard.groupRanking.slice(groupRankStart, groupRankStart + GROUP_RANK_PAGE_SIZE)
+  const tracePageCount = Math.max(1, Math.ceil(trace.total / TRACE_PAGE_SIZE))
+  const safeTracePage = Math.min(tracePage, tracePageCount - 1)
   const groupMax = Math.max(500, ...dashboard.groupRanking.map(row => row.count))
   const chartPoints = buildLinePoints(dashboard.hourlyDistribution)
   const groupRows = useMemo(() => {
@@ -510,6 +528,12 @@ export default function RemoteViewerPage() {
       setGroupRankPage(groupRankPageCount)
     }
   }, [groupRankPage, groupRankPageCount])
+
+  useEffect(() => {
+    if (tracePage > tracePageCount - 1) {
+      setTracePage(Math.max(0, tracePageCount - 1))
+    }
+  }, [tracePage, tracePageCount])
 
   async function copyRawMessage() {
     if (!rawMessage.trim()) {
@@ -543,9 +567,16 @@ export default function RemoteViewerPage() {
             <section className="toolbar" aria-label="远程用户筛选区">
               <label className="field">
                 <span>活动标签</span>
-                <select value={selectedTagId} onChange={event => setSelectedTagId(event.target.value)}>
+                <select value={selectedTagId} onChange={event => {
+                  setSelectedTagId(event.target.value)
+                  setGroupRankPage(1)
+                  setRankingGroupId('')
+                  setTraceGroupId('')
+                  setTracePage(0)
+                }}>
+                  {!selectedTagId && <option value="">加载中</option>}
+                  {orderedTags.map(tag => <option key={tag.id} value={tag.id}>{tag.name}</option>)}
                   <option value={ALL_ACTIVITY_TAG_ID}>全部活动</option>
-                  {tags.map(tag => <option key={tag.id} value={tag.id}>{tag.name}</option>)}
                 </select>
               </label>
               <div className="toolbar-actions">
@@ -797,22 +828,40 @@ export default function RemoteViewerPage() {
                       <h2>群成员溯源</h2>
                       <p>当前筛选 <span>{trace.total}</span> 条</p>
                     </div>
-                    <select value={traceGroupId} onChange={event => setTraceGroupId(event.target.value)} aria-label="群筛选">
+                    <select value={traceGroupId} onChange={event => {
+                      setTracePage(0)
+                      setTraceGroupId(event.target.value)
+                    }} aria-label="群筛选">
                       <option value="">全部群</option>
                       {trace.groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}
                     </select>
-                    <div className="search">⌕ <input value={traceKeyword} placeholder="成员昵称" aria-label="成员昵称" onChange={event => setTraceKeyword(event.target.value)} /></div>
+                    <div className="search">⌕ <input value={traceKeyword} placeholder="成员昵称" aria-label="成员昵称" onChange={event => {
+                      setTracePage(0)
+                      setTraceKeyword(event.target.value)
+                    }} /></div>
                     <div className="datetime-range" aria-label="群成员溯源时间范围">
-                      <input type="datetime-local" step="1" value={traceStart} onChange={event => setTraceStart(event.target.value)} aria-label="溯源开始时间" />
-                      <input type="datetime-local" step="1" value={traceEnd} onChange={event => setTraceEnd(event.target.value)} aria-label="溯源结束时间" />
+                      <input type="datetime-local" step="1" value={traceStart} onChange={event => {
+                        setTracePage(0)
+                        setTraceStart(event.target.value)
+                      }} aria-label="溯源开始时间" />
+                      <input type="datetime-local" step="1" value={traceEnd} onChange={event => {
+                        setTracePage(0)
+                        setTraceEnd(event.target.value)
+                      }} aria-label="溯源结束时间" />
                     </div>
-                    <select value={traceStatus} onChange={event => setTraceStatus(event.target.value)} aria-label="状态筛选">
+                    <select value={traceStatus} onChange={event => {
+                      setTracePage(0)
+                      setTraceStatus(event.target.value)
+                    }} aria-label="状态筛选">
                       <option value="">全部状态</option>
                       <option value="active">未退出群</option>
                       <option value="quit">已退出群</option>
                       <option value="pending">待确认</option>
                     </select>
-                    <select value={traceAttribution} onChange={event => setTraceAttribution(event.target.value)} aria-label="归因筛选">
+                    <select value={traceAttribution} onChange={event => {
+                      setTracePage(0)
+                      setTraceAttribution(event.target.value)
+                    }} aria-label="归因筛选">
                       <option value="">全部归因</option>
                       <option value="valid">有效</option>
                       <option value="invalid">无效</option>
@@ -838,6 +887,15 @@ export default function RemoteViewerPage() {
                       </tbody>
                     </table>
                     {trace.rows.length === 0 && <EmptyState text="暂无溯源数据" />}
+                    {trace.total > TRACE_PAGE_SIZE && (
+                      <div className="group-rank-pagination trace-pagination">
+                        <span>共 {formatNumber(trace.total)} 条，{safeTracePage + 1}/{tracePageCount}</span>
+                        <div>
+                          <button type="button" disabled={safeTracePage <= 0} onClick={() => setTracePage(page => Math.max(0, page - 1))}>上一页</button>
+                          <button type="button" disabled={!trace.hasMore} onClick={() => setTracePage(page => Math.min(tracePageCount - 1, page + 1))}>下一页</button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </section>
               </section>
@@ -885,6 +943,18 @@ function PanelTitle({ title, subtitle }: { title: string; subtitle: string }) {
 
 function EmptyState({ text }: { text: string }) {
   return <div className="empty-state">{text}</div>
+}
+
+function preferredActivityTag(tags: ActivityTag[]) {
+  return tags.find(tag => tag.name.trim() === '拉新') ||
+    tags.find(tag => tag.name.includes('拉新')) ||
+    tags[0]
+}
+
+function orderActivityTags(tags: ActivityTag[]) {
+  const preferred = preferredActivityTag(tags)
+  if (!preferred) return tags
+  return [preferred, ...tags.filter(tag => tag.id !== preferred.id)]
 }
 
 function TraceRow({ row, onRaw }: { row: MemberTraceRow; onRaw: (raw: string) => void }) {

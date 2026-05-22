@@ -87,6 +87,8 @@ type TraceFilters = {
   status?: string
   attribution?: string
   includeQuit?: boolean
+  limit?: number
+  offset?: number
 }
 
 type GroupReleaseFilters = {
@@ -101,6 +103,11 @@ type GroupMemberExportFilters = GroupReleaseFilters & {
 type GroupExportFile = {
   filename: string
   content: string
+}
+
+type EventLoadFilters = {
+  tagId?: string
+  groupId?: string
 }
 
 const ALL_ACTIVITY_TAG_ID = '__all__'
@@ -182,8 +189,11 @@ export async function getDashboard(filters: DashboardFilters): Promise<Dashboard
 }
 
 export async function getMemberTrace(filters: TraceFilters): Promise<MemberTraceData> {
-  const events = await loadFinalEvents(filters.tagId)
-  const groups = buildGroupsFromEvents(events)
+  const [events, groupBindings] = await Promise.all([
+    loadFinalEvents({ tagId: filters.tagId, groupId: filters.groupId }),
+    loadGroupBindings(filters.tagId)
+  ])
+  const groups = buildGroupsFromBindings(getScopedBindings(groupBindings, filters.tagId))
   const keyword = (filters.keyword || '').trim().toLowerCase()
 
   const rows = events
@@ -204,7 +214,19 @@ export async function getMemberTrace(filters: TraceFilters): Promise<MemberTrace
     .sort((a, b) => timeValue(eventTime(b)) - timeValue(eventTime(a)))
     .map(toMemberTraceRow)
 
-  return { rows, total: rows.length, groups }
+  const total = rows.length
+  const offset = Math.max(0, Math.floor(Number(filters.offset || 0)))
+  const limit = Math.max(0, Math.floor(Number(filters.limit || 0)))
+  const pagedRows = limit > 0 ? rows.slice(offset, offset + limit) : rows
+
+  return {
+    rows: pagedRows,
+    total,
+    groups,
+    limit: limit || undefined,
+    offset: limit > 0 ? offset : undefined,
+    hasMore: limit > 0 ? offset + limit < total : false
+  }
 }
 
 export async function getRankingExportRows(filters: DashboardFilters) {
@@ -286,31 +308,33 @@ export async function getBatchGroupMemberExportFiles(filters: GroupReleaseFilter
   }))
 }
 
-async function loadFinalEvents(tagId?: string) {
-  const [compatibilityEvents, finalEvents] = await Promise.all([
-    loadCompatibilityEvents(tagId),
-    loadFinalStatEvents(tagId).catch(() => [])
-  ])
-  return mergeEventRows([...compatibilityEvents, ...finalEvents])
+async function loadFinalEvents(input?: string | EventLoadFilters) {
+  const filters = typeof input === 'string' ? { tagId: input } : (input || {})
+  const compatibilityEvents = await loadCompatibilityEvents(filters)
+  if (compatibilityEvents.length > 0) return mergeEventRows(compatibilityEvents)
+  const finalEvents = await loadFinalStatEvents(filters).catch(() => [])
+  return mergeEventRows(finalEvents)
 }
 
-async function loadFinalStatEvents(tagId?: string) {
+async function loadFinalStatEvents(filters: EventLoadFilters = {}) {
   const query: Record<string, string | number> = {
     select: '*',
     order: 'id.asc'
   }
 
-  if (tagId && tagId !== ALL_ACTIVITY_TAG_ID) query.activity_tag_id = `eq.${tagId}`
+  if (filters.tagId && filters.tagId !== ALL_ACTIVITY_TAG_ID) query.activity_tag_id = `eq.${filters.tagId}`
+  if (filters.groupId) query.group_id = `eq.${filters.groupId}`
 
   return supabaseSelectAll<FinalStatEvent>('final_stat_events', query)
 }
 
-async function loadCompatibilityEvents(tagId?: string) {
+async function loadCompatibilityEvents(filters: EventLoadFilters = {}) {
   const query: Record<string, string | number> = {
     select: '*',
     order: 'id.asc'
   }
-  if (tagId && tagId !== ALL_ACTIVITY_TAG_ID) query.activity_tag_id = `eq.${tagId}`
+  if (filters.tagId && filters.tagId !== ALL_ACTIVITY_TAG_ID) query.activity_tag_id = `eq.${filters.tagId}`
+  if (filters.groupId) query.group_id = `eq.${filters.groupId}`
 
   const [inviteRows, quitRows] = await Promise.all([
     supabaseSelectAll<AnyRecord>('invite_events', query),
