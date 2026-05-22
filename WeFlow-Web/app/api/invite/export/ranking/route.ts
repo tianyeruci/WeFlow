@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
       rankingStart: params.get('rankingStart') || undefined,
       rankingEnd: params.get('rankingEnd') || undefined
     })
-    return csvResponse('邀请排行榜.csv', ['邀请人', '邀请人 wxid', '有效邀请人数'], rows)
+    return csvResponse('邀请排行榜.csv', ['邀请人', '邀请人 wxid', '邀请人数'], rows)
   } catch (error) {
     const message = error instanceof RemoteDataError ? error.message : 'Failed to export ranking'
     return Response.json({ error: message }, { status: error instanceof RemoteDataError ? error.status : 500 })
