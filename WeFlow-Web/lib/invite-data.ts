@@ -30,6 +30,7 @@ type FinalStatEvent = {
   inviter?: string
   inviter_name?: string
   inviter_wx_id?: string
+  inviter_wxid?: string
   operator_name?: string
   operator_wxid?: string
   join_type?: string
@@ -47,11 +48,25 @@ type FinalStatEvent = {
 }
 
 type GroupTagBinding = {
+  account_scope?: string
   group_id?: string
   group_name?: string
   activity_tag_id?: string
   enabled?: boolean
   member_count?: number | null
+  updated_at?: string | null
+  raw_json?: unknown
+}
+
+type InviterIdentityMapping = {
+  id?: string
+  account_scope?: string
+  person_key?: string
+  person_name?: string
+  wxid?: string
+  display_name?: string
+  enabled?: boolean
+  created_at?: string | null
   updated_at?: string | null
   raw_json?: unknown
 }
@@ -107,11 +122,12 @@ export async function getDashboard(filters: DashboardFilters): Promise<Dashboard
     loadGroupBindings(filters.tagId)
   ])
   const scopedBindings = getScopedBindings(groupBindings, filters.tagId)
+  const inviterMappings = await loadInviterIdentityMappings(scopedBindings)
   const scopedInviteEvents = getScopedInviteEvents(events, groupBindings, filters.tagId)
   const scopedQuitEvents = getScopedQuitEvents(events, groupBindings, filters.tagId)
   const groups = buildGroupsFromBindings(scopedBindings)
   const rankingEvents = scopedInviteEvents.filter(row => {
-    if (!isEffectiveInviteEvent(row)) return false
+    if (!isRankableInviteEvent(row, false)) return false
     if (filters.rankingGroupId && String(row.group_id || '') !== filters.rankingGroupId) return false
     return withinRange(row.invite_time, filters.rankingStart, filters.rankingEnd)
   })
@@ -120,9 +136,9 @@ export async function getDashboard(filters: DashboardFilters): Promise<Dashboard
     cards: {
       activeRobots: 0,
       monitoredGroups: groups.length,
-      totalMembers: scopedInviteEvents.filter(row => row.delete_flag !== 1).length,
+      totalMembers: sumBindingMemberCounts(scopedBindings),
       totalMembersWithQuit: scopedInviteEvents.length,
-      todayNew: scopedInviteEvents.filter(row => row.delete_flag !== 1 && isToday(row.invite_time)).length,
+      todayNew: scopedInviteEvents.filter(row => isToday(row.invite_time)).length,
       todayQuit: [
         ...scopedQuitEvents.filter(row => row.status === 'confirmed' && isToday(eventTime(row))),
         ...scopedInviteEvents.filter(row => row.status === 'confirmed' && row.delete_flag === 1 && isToday(eventTime(row)))
@@ -134,7 +150,7 @@ export async function getDashboard(filters: DashboardFilters): Promise<Dashboard
     },
     groups,
     hourlyDistribution: buildHourlyDistribution(scopedInviteEvents),
-    inviteRanking: buildInviteRanking(rankingEvents),
+    inviteRanking: buildInviteRanking(rankingEvents, inviterMappings),
     groupRanking: buildGroupRanking(scopedBindings),
     recentActivities: events
       .filter(row => isEventInCurrentTag(row, groupBindings, filters.tagId))
@@ -279,7 +295,7 @@ async function loadFinalEvents(tagId?: string) {
 
 async function loadGroupBindings(tagId?: string) {
   const query: Record<string, string | number> = {
-    select: 'group_id,group_name,activity_tag_id,enabled,member_count,updated_at,raw_json',
+    select: 'account_scope,group_id,group_name,activity_tag_id,enabled,member_count,updated_at,raw_json',
     enabled: 'eq.true',
     order: 'id.asc'
   }
@@ -287,6 +303,33 @@ async function loadGroupBindings(tagId?: string) {
   if (tagId && tagId !== ALL_ACTIVITY_TAG_ID) query.activity_tag_id = `eq.${tagId}`
 
   return supabaseSelectAll<GroupTagBinding>('group_tag_bindings', query)
+}
+
+async function loadInviterIdentityMappings(bindings: GroupTagBinding[]) {
+  const accountScopes = Array.from(new Set(bindings.map(row => String(row.account_scope || '').trim()).filter(Boolean)))
+  if (bindings.length === 0 || accountScopes.length === 0) return []
+  const query: Record<string, string | number> = {
+    select: 'id,account_scope,person_key,person_name,wxid,display_name,enabled,updated_at,raw_json',
+    enabled: 'eq.true',
+    order: 'id.asc'
+  }
+
+  if (accountScopes.length === 1) query.account_scope = `eq.${accountScopes[0]}`
+
+  const rows = await supabaseSelectAll<InviterIdentityMapping>('inviter_identity_mappings', query)
+  if (accountScopes.length <= 1) return rows.filter(row => row.enabled !== false)
+  const allowed = new Set(accountScopes)
+  return rows.filter(row => row.enabled !== false && allowed.has(String(row.account_scope || '').trim()))
+}
+
+export async function listInviterIdentityMappings(accountScope?: string) {
+  const query: Record<string, string | number> = {
+    select: 'id,account_scope,person_key,person_name,wxid,display_name,enabled,created_at,updated_at,raw_json',
+    enabled: 'eq.true',
+    order: 'id.asc'
+  }
+  if (accountScope) query.account_scope = `eq.${accountScope}`
+  return supabaseSelectAll<InviterIdentityMapping>('inviter_identity_mappings', query)
 }
 
 function isConfirmedStatEvent(row: FinalStatEvent) {
@@ -299,10 +342,6 @@ function isInviteEvent(row: FinalStatEvent) {
 
 function isQuitEvent(row: FinalStatEvent) {
   return row.event_type === 'quit' || row.event_type === 'exit'
-}
-
-function isEffectiveInviteEvent(row: FinalStatEvent) {
-  return isInviteEvent(row) && row.status === 'confirmed' && row.valid_flag === 1 && Boolean(memberKey(row))
 }
 
 function isVisibleForTrace(row: FinalStatEvent) {
@@ -344,20 +383,59 @@ function buildHourlyDistribution(events: FinalStatEvent[]) {
   return buckets
 }
 
-function buildInviteRanking(events: FinalStatEvent[]): InviteRankingRow[] {
-  const ranking = new Map<string, { inviterId: string; inviterName: string; count: number; groups: Set<string>; recent: number }>()
+function buildInviteRanking(events: FinalStatEvent[], mappings: InviterIdentityMapping[]): InviteRankingRow[] {
+  const lookup = buildInviterMappingLookup(mappings)
+  const ranking = new Map<string, { inviterName: string; inviterIds: Set<string>; count: number; groups: Set<string>; recent: number }>()
   events.forEach(row => {
-    const name = inviterName(row)
-    const id = String(row.inviter_wx_id || row.inviter_name || name || 'unknown')
-    const current = ranking.get(id) || { inviterId: id, inviterName: name || id, count: 0, groups: new Set<string>(), recent: 0 }
+    const identity = resolveInviterIdentity(row, lookup)
+    if (!identity.key) return
+    const current = ranking.get(identity.key) || { inviterName: identity.name, inviterIds: new Set<string>(), count: 0, groups: new Set<string>(), recent: 0 }
     current.count += 1
+    if (identity.wxid) current.inviterIds.add(identity.wxid)
     current.groups.add(String(row.group_id || ''))
     current.recent = Math.max(current.recent, timeValue(row.invite_time))
-    ranking.set(id, current)
+    ranking.set(identity.key, current)
   })
   return Array.from(ranking.values())
-    .map(row => ({ inviterId: row.inviterId, inviterName: row.inviterName, count: row.count }))
-    .sort((a, b) => b.count - a.count)
+    .map(row => ({
+      inviterId: Array.from(row.inviterIds).join(', ') || row.inviterName,
+      inviterName: row.inviterName,
+      count: row.count,
+      recent: row.recent
+    }))
+    .sort((a, b) => b.count - a.count || b.recent - a.recent)
+    .map(({ recent: _recent, ...row }) => row)
+}
+
+function buildInviterMappingLookup(mappings: InviterIdentityMapping[]) {
+  const byWxid = new Map<string, InviterIdentityMapping>()
+  const byName = new Map<string, InviterIdentityMapping>()
+  mappings.forEach(row => {
+    if (row.enabled === false || !row.person_key) return
+    const wxid = normalizeIdentity(row.wxid)
+    const name = normalizeIdentity(row.display_name || row.person_name)
+    if (wxid && !byWxid.has(wxid)) byWxid.set(wxid, row)
+    if (name && !byName.has(name)) byName.set(name, row)
+  })
+  return { byWxid, byName }
+}
+
+function resolveInviterIdentity(row: FinalStatEvent, lookup: ReturnType<typeof buildInviterMappingLookup>) {
+  const wxid = normalizeIdentity(inviterWxId(row))
+  const name = inviterName(row)
+  const mapping = (wxid ? lookup.byWxid.get(wxid) : undefined) || lookup.byName.get(normalizeIdentity(name))
+  if (mapping?.person_key) {
+    return {
+      key: `person:${mapping.person_key}`,
+      name: String(mapping.person_name || mapping.display_name || name || mapping.person_key),
+      wxid: wxid || normalizeIdentity(mapping.wxid)
+    }
+  }
+  return {
+    key: wxid ? `wxid:${wxid}` : `name:${normalizeIdentity(name)}`,
+    name: name || wxid,
+    wxid
+  }
 }
 
 function buildGroupRanking(bindings: GroupTagBinding[]) {
@@ -373,6 +451,10 @@ function buildGroupRanking(bindings: GroupTagBinding[]) {
   return Array.from(groups.entries())
     .map(([groupId, group]) => ({ groupId, groupName: bindingGroupName(group), count: normalizeCount(group.member_count) }))
     .sort((a, b) => b.count - a.count)
+}
+
+function sumBindingMemberCounts(bindings: GroupTagBinding[]) {
+  return bindings.reduce((sum, row) => sum + normalizeCount(row.member_count), 0)
 }
 
 function getScopedBindings(bindings: GroupTagBinding[], tagId?: string) {
@@ -446,6 +528,21 @@ function memberName(row: FinalStatEvent) {
 
 function inviterName(row: FinalStatEvent) {
   return String(row.inviter || row.inviter_name || '未知来源')
+}
+
+function inviterWxId(row: FinalStatEvent) {
+  return String(row.inviter_wx_id || row.inviter_wxid || '').trim()
+}
+
+function isKnownInviterName(value: unknown) {
+  const normalized = normalizeIdentity(value)
+  return Boolean(normalized) && normalized !== '未知来源' && normalized !== 'unknown' && normalized !== '鏈煡鏉ユ簮'
+}
+
+function isRankableInviteEvent(row: FinalStatEvent, dedupeMembers: boolean) {
+  if (!isInviteEvent(row) || row.join_type === 'direct') return false
+  if (dedupeMembers && (row.status !== 'confirmed' || row.valid_flag !== 1 || row.delete_flag === 1 || !memberKey(row))) return false
+  return Boolean(inviterWxId(row) || isKnownInviterName(inviterName(row)))
 }
 
 function operatorName(row: FinalStatEvent) {

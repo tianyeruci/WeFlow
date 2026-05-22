@@ -276,6 +276,33 @@ create index if not exists idx_member_identity_bindings_sync_status
   on member_identity_bindings(sync_status);
 
 
+create table if not exists inviter_identity_mappings (
+  id varchar(64) primary key,
+  account_scope varchar(128) not null,
+  person_key varchar(128) not null,
+  person_name varchar(255) not null,
+  wxid varchar(128) not null,
+  display_name varchar(255),
+  enabled boolean not null default true,
+  created_at timestamptz,
+  updated_at timestamptz,
+  raw_json jsonb
+);
+
+create unique index if not exists uk_inviter_identity_mappings_scope_wxid_enabled
+  on inviter_identity_mappings(account_scope, wxid)
+  where enabled = true;
+
+create index if not exists idx_inviter_identity_mappings_scope_person
+  on inviter_identity_mappings(account_scope, person_key);
+
+create index if not exists idx_inviter_identity_mappings_scope_wxid
+  on inviter_identity_mappings(account_scope, wxid);
+
+create index if not exists idx_inviter_identity_mappings_enabled
+  on inviter_identity_mappings(enabled);
+
+
 create table if not exists scan_logs (
   id varchar(64) primary key,
   account_scope varchar(128) not null,
@@ -404,6 +431,7 @@ grant select, insert, update, delete on table raw_events to service_role;
 grant select, insert, update, delete on table invite_events to service_role;
 grant select, insert, update, delete on table quit_events to service_role;
 grant select, insert, update, delete on table member_identity_bindings to service_role;
+grant select, insert, update, delete on table inviter_identity_mappings to service_role;
 grant select, insert, update, delete on table scan_logs to service_role;
 grant select, insert, update, delete on table sync_batches to service_role;
 grant usage, select on sequence sync_batches_id_seq to service_role;

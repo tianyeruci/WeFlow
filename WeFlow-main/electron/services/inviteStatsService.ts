@@ -122,6 +122,17 @@ export interface MemberIdentityBinding {
   updated_at: number
 }
 
+export interface InviterIdentityMapping {
+  id: string
+  person_key: string
+  person_name: string
+  wxid: string
+  display_name: string
+  enabled: boolean
+  created_at: number
+  updated_at: number
+}
+
 export interface InviteScanLog {
   id: string
   tag_id: string
@@ -182,6 +193,7 @@ interface InviteStatsScopeData {
   inviteEvents: InviteEvent[]
   quitEvents: QuitEvent[]
   memberIdentityBindings: MemberIdentityBinding[]
+  inviterIdentityMappings: InviterIdentityMapping[]
   scanLogs: InviteScanLog[]
 }
 
@@ -198,6 +210,7 @@ export interface InviteRemoteSyncPayload {
   inviteEvents: Array<Record<string, unknown>>
   quitEvents: Array<Record<string, unknown>>
   memberIdentityBindings: Array<Record<string, unknown>>
+  inviterIdentityMappings?: Array<Record<string, unknown>>
   scanLogs: Array<Record<string, unknown>>
 }
 
@@ -330,6 +343,7 @@ const createEmptyScope = (): InviteStatsScopeData => ({
   inviteEvents: [],
   quitEvents: [],
   memberIdentityBindings: [],
+  inviterIdentityMappings: [],
   scanLogs: []
 })
 
@@ -432,10 +446,14 @@ class InviteStatsService {
   }
 
   private ensureScopeShape(data: InviteStatsScopeData): void {
-    const scope = data as InviteStatsScopeData & { rawEvents?: InviteRawEvent[] }
+    const scope = data as InviteStatsScopeData & { rawEvents?: InviteRawEvent[]; inviterIdentityMappings?: InviterIdentityMapping[] }
     let changed = false
     if (!Array.isArray(scope.rawEvents)) {
       scope.rawEvents = []
+      changed = true
+    }
+    if (!Array.isArray(scope.inviterIdentityMappings)) {
+      scope.inviterIdentityMappings = []
       changed = true
     }
     if (scope.rawEvents.length === 0 && (data.inviteEvents.length > 0 || data.quitEvents.length > 0)) {
@@ -453,6 +471,16 @@ class InviteStatsService {
   private toIsoTime(timestamp?: number): string | null {
     if (!Number.isFinite(timestamp) || !timestamp || timestamp <= 0) return null
     return new Date(timestamp * 1000).toISOString()
+  }
+
+  private fromRemoteTime(value: unknown): number {
+    if (typeof value === 'number' && Number.isFinite(value)) return value > 100000000000 ? Math.floor(value / 1000) : Math.floor(value)
+    const text = normalizeText(value)
+    if (!text) return 0
+    const numeric = Number(text)
+    if (Number.isFinite(numeric)) return numeric > 100000000000 ? Math.floor(numeric / 1000) : Math.floor(numeric)
+    const parsed = Date.parse(text)
+    return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : 0
   }
 
   private cleanAccountDirName(name: string): string {
@@ -1594,6 +1622,56 @@ class InviteStatsService {
       .sort((a, b) => a.invite_time - b.invite_time)
   }
 
+  private getInviterWxId(event: InviteEvent): string {
+    return this.cleanAccountDirName(normalizeText(event.inviter_wx_id))
+  }
+
+  private isKnownInviterName(value: unknown): boolean {
+    const normalized = normalizeIdentityText(value)
+    return Boolean(normalized) && normalized !== '未知来源' && normalized !== 'unknown' && normalized !== '鏈煡鏉ユ簮'
+  }
+
+  private isRankableInviteEvent(event: InviteEvent, dedupeMembers: boolean): boolean {
+    if (event.join_type === 'direct') return false
+    if (dedupeMembers && (event.status !== 'confirmed' || event.valid_flag !== 1 || event.delete_flag === 1 || !this.getMemberKey(event))) return false
+    return Boolean(this.getInviterWxId(event) || this.isKnownInviterName(event.inviter))
+  }
+
+  private buildInviterMappingLookup(data: InviteStatsScopeData) {
+    const byWxid = new Map<string, InviterIdentityMapping>()
+    const byName = new Map<string, InviterIdentityMapping>()
+    for (const mapping of data.inviterIdentityMappings || []) {
+      if (!mapping.enabled || !mapping.person_key) continue
+      const wxid = this.cleanAccountDirName(normalizeText(mapping.wxid))
+      const name = normalizeIdentityText(mapping.display_name || mapping.person_name)
+      if (wxid && !byWxid.has(wxid)) byWxid.set(wxid, mapping)
+      if (name && !byName.has(name)) byName.set(name, mapping)
+    }
+    return { byWxid, byName }
+  }
+
+  private resolveInviterIdentity(
+    event: InviteEvent,
+    lookup: { byWxid: Map<string, InviterIdentityMapping>; byName: Map<string, InviterIdentityMapping> }
+  ) {
+    const wxid = this.getInviterWxId(event)
+    const inviterName = normalizeText(event.inviter)
+    const mapping = (wxid ? lookup.byWxid.get(wxid) : undefined) ||
+      lookup.byName.get(normalizeIdentityText(inviterName))
+    if (mapping) {
+      return {
+        key: `person:${mapping.person_key}`,
+        name: mapping.person_name || mapping.display_name || inviterName || mapping.wxid || mapping.person_key,
+        wxid: wxid || this.cleanAccountDirName(normalizeText(mapping.wxid))
+      }
+    }
+    return {
+      key: wxid ? `wxid:${wxid}` : `name:${normalizeIdentityText(inviterName)}`,
+      name: inviterName || wxid,
+      wxid
+    }
+  }
+
   private filterByTime<T extends { invite_time?: number; quit_time?: number; event_time?: number }>(
     rows: T[],
     startTime?: number,
@@ -1619,33 +1697,25 @@ class InviteStatsService {
     dedupeMembers = true
   ): InviteRankingRow[] {
     const normalizedGroupId = normalizeText(groupId)
-    const sourceEvents = dedupeMembers
-      ? this.getDashboardInviteEvents(data, tagId, true)
-      : this.getScopedInviteEvents(data, tagId)
-        .filter((event) => event.status === 'confirmed' && event.valid_flag === 1)
-    const effective = this.filterByTime(sourceEvents, startTime, endTime)
-      .filter((event) => {
-        if (normalizedGroupId && event.group_id !== normalizedGroupId) return false
-        if (dedupeMembers) {
-          if (event.join_type === 'invite') return Boolean(event.inviter || event.inviter_wx_id)
-          if (event.join_type === 'qrcode') return Boolean(event.inviter && event.inviter !== '鏈煡鏉ユ簮')
-          return false
-        }
-        return true
-      })
-
-    const buckets = new Map<string, { inviter: string; inviter_wx_id: string; users: Set<string>; groups: Set<string>; count: number; recent: number }>()
+    const scopedEvents = this.getScopedInviteEvents(data, tagId)
+    const filteredEvents = this.filterByTime(scopedEvents, startTime, endTime)
+      .filter((event) => (!normalizedGroupId || event.group_id === normalizedGroupId) && this.isRankableInviteEvent(event, dedupeMembers))
+    const effective = dedupeMembers ? this.dedupeInviteEventsByMemberKey(filteredEvents) : filteredEvents
+    const lookup = this.buildInviterMappingLookup(data)
+    const buckets = new Map<string, { inviter: string; wxids: Set<string>; users: Set<string>; groups: Set<string>; count: number; recent: number }>()
     for (const event of effective) {
-      const key = event.inviter_wx_id || normalizeIdentityText(event.inviter)
-      if (!key) continue
-      const bucket = buckets.get(key) || {
-        inviter: event.inviter || event.inviter_wx_id,
-        inviter_wx_id: event.inviter_wx_id,
+      const identity = this.resolveInviterIdentity(event, lookup)
+      if (!identity.key) continue
+      const wxid = identity.wxid || this.getInviterWxId(event)
+      const bucket = buckets.get(identity.key) || {
+        inviter: identity.name || wxid,
+        wxids: new Set<string>(),
         users: new Set<string>(),
         groups: new Set<string>(),
         count: 0,
         recent: 0
       }
+      if (wxid) bucket.wxids.add(wxid)
       if (dedupeMembers) {
         const memberKey = this.getMemberKey(event)
         if (memberKey) bucket.users.add(memberKey)
@@ -1654,14 +1724,14 @@ class InviteStatsService {
       }
       bucket.groups.add(event.group_id)
       bucket.recent = Math.max(bucket.recent, event.invite_time)
-      buckets.set(key, bucket)
+      buckets.set(identity.key, bucket)
     }
 
     return Array.from(buckets.values())
       .map((bucket) => ({
         rank: 0,
         inviter: bucket.inviter,
-        inviter_wx_id: bucket.inviter_wx_id,
+        inviter_wx_id: Array.from(bucket.wxids).join(', '),
         invite_count: dedupeMembers ? bucket.users.size : bucket.count,
         group_count: bucket.groups.size,
         recent_invite_time: bucket.recent
@@ -1675,10 +1745,38 @@ class InviteStatsService {
     const ranking = this.buildInviteRanking(data, tagId)
     const map = new Map<string, number>()
     for (const row of ranking) {
-      if (row.inviter_wx_id) map.set(this.cleanAccountDirName(row.inviter_wx_id), row.invite_count)
+      for (const wxid of String(row.inviter_wx_id || '').split(',')) {
+        const normalized = this.cleanAccountDirName(wxid)
+        if (normalized) map.set(normalized, row.invite_count)
+      }
       if (row.inviter) map.set(normalizeIdentityText(row.inviter), row.invite_count)
     }
     return map
+  }
+
+  replaceCurrentScopeInviterIdentityMappings(rows: Array<Record<string, unknown>>): number {
+    const data = this.getScope()
+    const now = this.nowSeconds()
+    const mappings: InviterIdentityMapping[] = []
+    for (const row of rows || []) {
+      const personKey = normalizeText(row.person_key)
+      const wxid = this.cleanAccountDirName(normalizeText(row.wxid))
+      const displayName = normalizeText(row.display_name)
+      if (!personKey || (!wxid && !displayName)) continue
+      mappings.push({
+        id: normalizeText(row.id) || `${personKey}:${wxid || normalizeIdentityText(displayName)}`,
+        person_key: personKey,
+        person_name: normalizeText(row.person_name) || displayName || personKey,
+        wxid,
+        display_name: displayName,
+        enabled: row.enabled !== false,
+        created_at: this.fromRemoteTime(row.created_at) || now,
+        updated_at: this.fromRemoteTime(row.updated_at) || now
+      })
+    }
+    data.inviterIdentityMappings = mappings
+    this.persist()
+    return mappings.length
   }
 
   async listActivityTags(): Promise<{ success: boolean; data?: InviteActivityTag[]; error?: string }> {
@@ -2208,6 +2306,24 @@ class InviteStatsService {
       })
     }
     return rows
+  }
+
+  private async countUniqueCurrentGroupMembers(groupIds: Set<string>): Promise<number | null> {
+    const ids = Array.from(groupIds).filter(Boolean)
+    if (ids.length === 0) return 0
+    try {
+      const memberGroups = await Promise.all(ids.map((groupId) => this.loadGroupMembers(groupId)))
+      const members = new Set<string>()
+      for (const groupMembers of memberGroups) {
+        for (const member of groupMembers) {
+          const key = this.cleanAccountDirName(normalizeText(member.username))
+          if (key) members.add(key)
+        }
+      }
+      return members.size
+    } catch {
+      return null
+    }
   }
 
   async listGroups(): Promise<{ success: boolean; data?: InviteStatsGroupRow[]; error?: string }> {
@@ -2765,13 +2881,17 @@ class InviteStatsService {
           })()
         : []
 
+      const groupMemberTotal = groupRows.reduce((sum, row) => sum + this.normalizeMemberCount(row.member_count), 0)
+      const uniqueCurrentGroupMembers = dedupeMembers && !input.includeQuitMembers
+        ? await this.countUniqueCurrentGroupMembers(bindingGroupIds)
+        : null
       const activeMemberCount = dedupeMembers
-        ? new Set(inviteEventsForDashboard
+        ? uniqueCurrentGroupMembers ?? new Set(inviteEventsForDashboard
             .filter((event) => event.status === 'confirmed' && event.delete_flag !== 1)
             .map((event) => this.getMemberKey(event))
             .filter(Boolean)
           ).size
-        : inviteEventsForDashboard.filter((event) => event.delete_flag !== 1).length
+        : groupMemberTotal
       const totalMembers = input.includeQuitMembers
         ? (dedupeMembers
             ? new Set(inviteEventsForDashboard
