@@ -38,6 +38,8 @@ export interface InviteGroupTagBinding {
   last_scan_time: number
   last_invite_time: number
   last_message_id: string
+  last_scanned_message_time?: number
+  last_scanned_local_id?: number
   sync_status?: string
   sync_error?: string
   last_sync_at?: number
@@ -356,6 +358,7 @@ class InviteStatsService {
   private readonly fileVersion = 1
   private readonly maxScanLogsPerScope = 80
   private readonly systemMessagePageSize = 500
+  private readonly scanCursorOverlapSeconds = 24 * 60 * 60
   private readonly autoScanInitialDelayMs = 10 * 60 * 1000
   private readonly autoScanIntervalMs = 3 * 60 * 1000
   private readonly autoQuitCheckIntervalMs = 30 * 60 * 1000
@@ -1067,26 +1070,37 @@ class InviteStatsService {
     return changed
   }
 
-  private getGroupRawEvents(data: InviteStatsScopeData, groupId: string): InviteRawEvent[] {
-    return data.rawEvents.filter((event) => event.group_id === groupId)
-  }
-
-  private getGroupLastRawUpdatedAt(data: InviteStatsScopeData, groupId: string): number {
-    return this.getGroupRawEvents(data, groupId).reduce((max, event) => {
-      return Math.max(max, Number(event.updated_at || 0))
-    }, 0)
-  }
-
   private isInviteSystemMessage(message: Message, groupId: string): boolean {
     return Number(message.localType || 0) === 10000 || normalizeText(message.senderUsername) === groupId
   }
 
-  private advanceGroupRawUpdatedAt(data: InviteStatsScopeData, groupId: string, updatedAt: number): boolean {
-    const latest = this.getGroupRawEvents(data, groupId)
-      .sort((a, b) => Number(b.updated_at || 0) - Number(a.updated_at || 0))[0]
-    if (!latest || Number(latest.updated_at || 0) >= updatedAt) return false
-    this.markSyncDirty(latest, updatedAt)
-    return true
+  private getBindingScanCursor(binding: InviteGroupTagBinding): { time: number; localId: number } {
+    return {
+      time: Number(binding.last_scanned_message_time || 0),
+      localId: Number(binding.last_scanned_local_id || 0)
+    }
+  }
+
+  private isAfterMessageCursor(
+    createTime: number,
+    localId: number,
+    cursorTime: number,
+    cursorLocalId: number
+  ): boolean {
+    if (createTime > cursorTime) return true
+    return createTime === cursorTime && localId > cursorLocalId
+  }
+
+  private setBindingScanCursor(
+    binding: InviteGroupTagBinding,
+    createTime: number,
+    localId: number
+  ): void {
+    if (createTime <= 0) return
+    const current = this.getBindingScanCursor(binding)
+    if (!this.isAfterMessageCursor(createTime, localId, current.time, current.localId)) return
+    binding.last_scanned_message_time = createTime
+    binding.last_scanned_local_id = localId
   }
 
   private upsertRawEventFromInvite(data: InviteStatsScopeData, event: InviteEvent): boolean {
@@ -2420,6 +2434,8 @@ class InviteStatsService {
           last_scan_time: 0,
           last_invite_time: 0,
           last_message_id: '',
+          last_scanned_message_time: 0,
+          last_scanned_local_id: 0,
           sync_status: 'dirty',
           sync_error: '',
           last_sync_at: 0,
@@ -2493,12 +2509,14 @@ class InviteStatsService {
 
     try {
       for (const binding of bindings) {
-        const context = await this.getGroupContext(data, binding)
-        const hasGroupRawEvents = this.getGroupRawEvents(data, binding.group_id).length > 0
-        const scanStart = this.getGroupLastRawUpdatedAt(data, binding.group_id)
+        const scanCursor = this.getBindingScanCursor(binding)
+        const effectiveScanStart = scanCursor.time > 0
+          ? Math.max(0, scanCursor.time - this.scanCursorOverlapSeconds)
+          : 0
+        let nextCursorTime = scanCursor.time
+        let nextCursorLocalId = scanCursor.localId
         let lastInviteTime = binding.last_invite_time || this.getGroupLastInviteTime(data, tagId, binding.group_id) || 0
         let lastMessageId = binding.last_message_id || ''
-        let groupAddedRawEvent = false
         const messages: Message[] = []
         let offset = 0
         let reachedWatermark = false
@@ -2513,13 +2531,18 @@ class InviteStatsService {
 
           for (const message of pageMessages) {
             const createTime = Number(message.createTime || 0)
+            const localId = Number(message.localId || 0)
             if (createTime > 0) oldestMessageTime = Math.min(oldestMessageTime, createTime)
-            if (scanStart > 0 && createTime <= scanStart) continue
             if (createTime > startedAt) continue
+            if (createTime > 0 && this.isAfterMessageCursor(createTime, localId, nextCursorTime, nextCursorLocalId)) {
+              nextCursorTime = createTime
+              nextCursorLocalId = localId
+            }
+            if (effectiveScanStart > 0 && createTime > 0 && createTime < effectiveScanStart) continue
             messages.push(message)
           }
 
-          if (scanStart > 0 && oldestMessageTime <= scanStart) reachedWatermark = true
+          if (effectiveScanStart > 0 && oldestMessageTime < effectiveScanStart) reachedWatermark = true
           if (result.rows.length < this.systemMessagePageSize) break
           offset += result.rows.length
         }
@@ -2530,6 +2553,7 @@ class InviteStatsService {
           return Number(a.localId || 0) - Number(b.localId || 0)
         })
 
+        const parsedMessages: Array<{ message: Message; parsedContent: string; parsedEvents: ParsedSystemEvent[] }> = []
         for (const message of messages) {
           log.scanned_messages += 1
           if (this.activeScanState) this.activeScanState.scannedMessageCount = log.scanned_messages
@@ -2537,47 +2561,50 @@ class InviteStatsService {
           const parsedContent = this.normalizeSystemContent(message)
           const parsedEvents = this.parseSystemEvents(parsedContent)
           if (parsedEvents.length === 0) continue
+          parsedMessages.push({ message, parsedContent, parsedEvents })
+        }
 
-          for (const parsed of parsedEvents) {
-            if (parsed.type === 'join') {
-              const event = this.buildInviteEvent(data, parsed, message, context, parsedContent)
-              event.created_at = startedAt
-              event.updated_at = startedAt
-              const rawCountBefore = data.rawEvents.length
-              this.upsertRawEventFromInvite(data, event)
-              groupAddedRawEvent = groupAddedRawEvent || data.rawEvents.length > rawCountBefore
-              if (!this.hasInviteEvent(data, event)) {
-                data.inviteEvents.push(event)
-                log.new_invites += 1
-                if (event.status === 'pending') log.pending_count += 1
-                lastInviteTime = Math.max(lastInviteTime, event.invite_time)
-                lastMessageId = event.source_message_id || lastMessageId
-              }
-            } else {
-              const event = this.buildQuitEvent(data, parsed, message, context, parsedContent)
-              event.created_at = startedAt
-              event.updated_at = startedAt
-              const rawCountBefore = data.rawEvents.length
-              this.upsertRawEventFromQuit(data, event)
-              groupAddedRawEvent = groupAddedRawEvent || data.rawEvents.length > rawCountBefore
-              if (!this.hasQuitEvent(data, event)) {
-                data.quitEvents.push(event)
-                log.new_quits += 1
-                if (event.status === 'pending') log.pending_count += 1
-                if (event.status === 'confirmed') this.applyQuitEventToInviteFlags(data, event)
-                lastMessageId = event.source_message_id || lastMessageId
+        if (parsedMessages.length > 0) {
+          const context = await this.getGroupContext(data, binding)
+
+          for (const parsedMessage of parsedMessages) {
+            const { message, parsedContent, parsedEvents } = parsedMessage
+            for (const parsed of parsedEvents) {
+              if (parsed.type === 'join') {
+                const event = this.buildInviteEvent(data, parsed, message, context, parsedContent)
+                const eventTime = Number(event.source_create_time || event.invite_time || startedAt)
+                event.created_at = eventTime
+                event.updated_at = eventTime
+                this.upsertRawEventFromInvite(data, event)
+                if (!this.hasInviteEvent(data, event)) {
+                  data.inviteEvents.push(event)
+                  log.new_invites += 1
+                  if (event.status === 'pending') log.pending_count += 1
+                  lastInviteTime = Math.max(lastInviteTime, event.invite_time)
+                  lastMessageId = event.source_message_id || lastMessageId
+                }
+              } else {
+                const event = this.buildQuitEvent(data, parsed, message, context, parsedContent)
+                const eventTime = Number(event.source_create_time || event.quit_time || startedAt)
+                event.created_at = eventTime
+                event.updated_at = eventTime
+                this.upsertRawEventFromQuit(data, event)
+                if (!this.hasQuitEvent(data, event)) {
+                  data.quitEvents.push(event)
+                  log.new_quits += 1
+                  if (event.status === 'pending') log.pending_count += 1
+                  if (event.status === 'confirmed') this.applyQuitEventToInviteFlags(data, event)
+                  lastMessageId = event.source_message_id || lastMessageId
+                }
               }
             }
           }
         }
 
-        if (!groupAddedRawEvent && hasGroupRawEvents) {
-          this.advanceGroupRawUpdatedAt(data, binding.group_id, startedAt)
-        }
-
         binding.last_scan_time = startedAt
         binding.last_invite_time = lastInviteTime
         binding.last_message_id = lastMessageId
+        this.setBindingScanCursor(binding, nextCursorTime, nextCursorLocalId)
         this.markSyncDirty(binding, startedAt)
       }
 
@@ -2684,6 +2711,26 @@ class InviteStatsService {
     }
   }
 
+  private clearActivityScanData(data: InviteStatsScopeData, tagId: string): void {
+    const bindings = this.getEnabledBindingsForTag(data, tagId)
+    const groupIds = new Set(bindings.map((binding) => binding.group_id))
+    const now = this.nowSeconds()
+
+    data.rawEvents = data.rawEvents.filter((event) => !groupIds.has(event.group_id))
+    data.inviteEvents = data.inviteEvents.filter((event) => event.activity_tag_id !== tagId)
+    data.quitEvents = data.quitEvents.filter((event) => event.activity_tag_id !== tagId)
+
+    for (const binding of bindings) {
+      binding.last_scan_time = 0
+      binding.last_invite_time = 0
+      binding.last_message_id = ''
+      binding.last_scanned_message_time = 0
+      binding.last_scanned_local_id = 0
+      this.markSyncDirty(binding, now)
+    }
+    this.recomputeFlags(data)
+  }
+
   async scanActivity(tagId: string): Promise<{ success: boolean; started?: boolean; skipped?: boolean; running?: boolean; log?: InviteScanLog; error?: string }> {
     if (this.scanPromise) return { success: true, skipped: true }
     const data = this.getScope()
@@ -2698,6 +2745,32 @@ class InviteStatsService {
       return { success: false, error: '当前活动标签没有绑定微信群' }
     }
     this.scanPromise = this.scanActivityInternal(normalizedTagId).catch((error) => ({
+      success: false,
+      error: error instanceof Error ? error.message : String(error)
+    })).finally(() => {
+      this.scanPromise = null
+    })
+    return { success: true, started: true }
+  }
+
+  async rescanActivity(tagId: string): Promise<{ success: boolean; started?: boolean; skipped?: boolean; running?: boolean; log?: InviteScanLog; error?: string }> {
+    if (this.scanPromise) return { success: true, skipped: true }
+    const data = this.getScope()
+    const normalizedTagId = normalizeText(tagId)
+    if (this.isAllActivityScope(normalizedTagId)) {
+      return { success: false, error: '全量回扫只允许选择单个活动标签' }
+    }
+    const tag = data.activityTags.find((item) => item.tag_id === normalizedTagId && item.enabled)
+    if (!tag) return { success: false, error: '活动标签不存在或未启用' }
+    if (this.getEnabledBindingsForTag(data, normalizedTagId).length === 0) {
+      return { success: false, error: '当前活动标签没有绑定微信群' }
+    }
+    this.scanPromise = (async () => {
+      const scope = this.getScope()
+      this.clearActivityScanData(scope, normalizedTagId)
+      this.persist()
+      return this.scanActivityInternal(normalizedTagId)
+    })().catch((error) => ({
       success: false,
       error: error instanceof Error ? error.message : String(error)
     })).finally(() => {

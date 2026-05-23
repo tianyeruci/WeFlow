@@ -916,7 +916,7 @@ function InviteStatsPage() {
   const scanSelectedTag = async () => {
     if (!selectedTagId || isScanning) return
     setIsScanning(true)
-    const result = await window.electronAPI.inviteStats.scanActivity(selectedTagId)
+    const result = await window.electronAPI.inviteStats.scanActivity(ALL_ACTIVITY_TAG_ID)
     if (!result.success) {
       showToast(result.error || '扫描失败')
       setIsScanning(false)
