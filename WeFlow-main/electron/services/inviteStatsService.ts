@@ -1630,13 +1630,12 @@ class InviteStatsService {
     endTime?: number,
     minInviteCount = 0,
     groupId?: string,
-    dedupeMembers = true
+    dedupeMembers = false
   ): InviteRankingRow[] {
     const normalizedGroupId = normalizeText(groupId)
     const sourceEvents = dedupeMembers
       ? this.getDashboardInviteEvents(data, tagId, true)
       : this.getScopedInviteEvents(data, tagId)
-        .filter((event) => event.status === 'confirmed' && event.valid_flag === 1)
     const effective = this.filterByTime(sourceEvents, startTime, endTime)
       .filter((event) => {
         if (normalizedGroupId && event.group_id !== normalizedGroupId) return false
@@ -2814,7 +2813,7 @@ class InviteStatsService {
       const data = this.getScope()
       let changed = this.recomputeFlags(data)
       const tagId = normalizeText(input.tagId) || ALL_ACTIVITY_TAG_ID
-      const dedupeMembers = input.dedupeMembers !== false
+      const dedupeMembers = input.dedupeMembers === true
       const tag = this.isAllActivityScope(tagId)
         ? undefined
         : data.activityTags.find((item) => item.tag_id === tagId)
@@ -3316,7 +3315,7 @@ class InviteStatsService {
   }): Promise<{ success: boolean; count?: number; error?: string }> {
     try {
       const data = this.getScope()
-      const rows = this.buildInviteRanking(data, payload.tagId, payload.startTime, payload.endTime, payload.minInviteCount, payload.groupId, payload.dedupeMembers !== false)
+      const rows = this.buildInviteRanking(data, payload.tagId, payload.startTime, payload.endTime, payload.minInviteCount, payload.groupId, payload.dedupeMembers === true)
       const headers = ['排名', '活动标签', '邀请人', '邀请人 wxid', '邀请人数', '关联群数量', '最近邀请时间']
       const tagName = data.activityTags.find((tag) => tag.tag_id === payload.tagId)?.tag_name || ''
       const body = rows.map((row) => [

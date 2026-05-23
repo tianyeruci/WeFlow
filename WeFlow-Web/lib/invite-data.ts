@@ -111,7 +111,7 @@ export async function getDashboard(filters: DashboardFilters): Promise<Dashboard
   const scopedQuitEvents = getScopedQuitEvents(events, groupBindings, filters.tagId)
   const groups = buildGroupsFromBindings(scopedBindings)
   const rankingEvents = scopedInviteEvents.filter(row => {
-    if (!isEffectiveInviteEvent(row)) return false
+    if (!isInviteEvent(row)) return false
     if (filters.rankingGroupId && String(row.group_id || '') !== filters.rankingGroupId) return false
     return withinRange(row.invite_time, filters.rankingStart, filters.rankingEnd)
   })
@@ -164,7 +164,7 @@ export async function getDashboard(filters: DashboardFilters): Promise<Dashboard
 export async function getMemberTrace(filters: TraceFilters): Promise<MemberTraceData> {
   const events = await loadFinalEvents(filters.tagId)
   const groups = buildGroupsFromEvents(events)
-  const keyword = (filters.keyword || '').trim().toLowerCase()
+  const keyword = normalizeSearchText(filters.keyword)
 
   const rows = events
     .filter(row => {
@@ -174,7 +174,7 @@ export async function getMemberTrace(filters: TraceFilters): Promise<MemberTrace
 
       if (!isVisibleForTrace(row)) return false
       if (filters.groupId && String(row.group_id || '') !== filters.groupId) return false
-      if (keyword && !memberName(row).toLowerCase().includes(keyword)) return false
+      if (keyword && !normalizeSearchText(memberName(row)).includes(keyword)) return false
       if (!withinRange(traceEventTime, filters.startTime, filters.endTime)) return false
       if (filters.status && traceStatus !== filters.status) return false
       if (filters.attribution && traceAttribution !== filters.attribution) return false
@@ -299,10 +299,6 @@ function isInviteEvent(row: FinalStatEvent) {
 
 function isQuitEvent(row: FinalStatEvent) {
   return row.event_type === 'quit' || row.event_type === 'exit'
-}
-
-function isEffectiveInviteEvent(row: FinalStatEvent) {
-  return isInviteEvent(row) && row.status === 'confirmed' && row.valid_flag === 1 && Boolean(memberKey(row))
 }
 
 function isVisibleForTrace(row: FinalStatEvent) {
@@ -438,6 +434,14 @@ function memberKey(row: FinalStatEvent) {
 
 function normalizeIdentity(value: unknown) {
   return String(value || '').trim().toLowerCase()
+}
+
+function normalizeSearchText(value: unknown) {
+  return String(value || '')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase()
 }
 
 function memberName(row: FinalStatEvent) {
