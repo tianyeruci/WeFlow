@@ -445,7 +445,7 @@ export default function RemoteViewerPage() {
     const total = rows.reduce((sum, row) => sum + row.count, 0)
     const date = new Date().toISOString().slice(0, 10).replace(/-/g, '')
     const ok = downloadRankingImage({
-      title: `【${scopeLabel}】邀请人数排行榜（招募者 ${rows.length} 名，入群人数 ${formatNumber(total)}）`,
+      title: `【${scopeLabel}】邀请人数排行榜（招募者 ${rows.length} 名，总人数 ${formatNumber(total)}）`,
       filename: `${sanitizeDownloadFilename(`邀请人数排行榜-${selectedScopeFileLabel}-${scopeLabel}-${date}`)}.png`,
       rows
     })
@@ -668,7 +668,7 @@ export default function RemoteViewerPage() {
                     <div className="panel-title">
                       <div>
                         <h2>邀请人数排行榜</h2>
-                        <p>【{selectedScopeLabel}】招募者 {dashboard.inviteRanking.length} 名，入群人数 {formatNumber(rankingInviteTotal)}</p>
+                        <p>【{selectedScopeLabel}】招募者 {dashboard.inviteRanking.length} 名，总人数 {formatNumber(rankingInviteTotal)}</p>
                       </div>
                       <div className="panel-actions">
                         <button className={`icon-btn ${chartMode === 'bar' ? 'active' : ''}`} title="柱状图" onClick={() => setChartMode('bar')}>▥</button>
