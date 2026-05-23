@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ActivityTag, DashboardData, MemberTraceData, MemberTraceRow } from '@/types/invite'
 
 type ViewKey = 'dashboard' | 'groups' | 'trace'
@@ -230,6 +230,7 @@ export default function RemoteViewerPage() {
   const [isRequestingLatestData, setIsRequestingLatestData] = useState(false)
   const [refreshCooldownRemaining, setRefreshCooldownRemaining] = useState(0)
   const [groupRankPage, setGroupRankPage] = useState(1)
+  const traceRequestSeq = useRef(0)
 
   const selectedTag = useMemo(
     () => selectedTagId === ALL_ACTIVITY_TAG_ID ? undefined : tags.find(tag => tag.id === selectedTagId),
@@ -301,8 +302,9 @@ export default function RemoteViewerPage() {
   }, [apiGet, rankingEnd, rankingGroupId, rankingStart, selectedTagId])
 
   const loadTrace = useCallback(async () => {
-    if (!selectedTagId) return
-    const tagId = selectedTagId
+    const requestSeq = traceRequestSeq.current + 1
+    traceRequestSeq.current = requestSeq
+    const tagId = selectedTagId || ALL_ACTIVITY_TAG_ID
     const params = new URLSearchParams({ tagId })
     if (traceGroupId) params.set('groupId', traceGroupId)
     if (traceKeyword.trim()) params.set('keyword', traceKeyword.trim())
@@ -317,12 +319,14 @@ export default function RemoteViewerPage() {
     setError('')
     try {
       const payload = await apiGet<{ trace: MemberTraceData }>(`/api/invite/member-trace?${params}`)
+      if (requestSeq !== traceRequestSeq.current) return
       setTrace(payload.trace)
     } catch (err) {
+      if (requestSeq !== traceRequestSeq.current) return
       setTrace(emptyTrace)
       setError(errorMessage(err))
     } finally {
-      setLoading(false)
+      if (requestSeq === traceRequestSeq.current) setLoading(false)
     }
   }, [apiGet, selectedTagId, traceAttribution, traceEnd, traceGroupId, traceKeyword, tracePage, traceStart, traceStatus])
 
@@ -442,10 +446,9 @@ export default function RemoteViewerPage() {
 
     const selectedGroup = rankingGroupId ? dashboard.groups.find(group => group.id === rankingGroupId) : undefined
     const scopeLabel = selectedGroup?.name || '所有群'
-    const total = includeQuitInTotal ? dashboard.cards.totalMembersWithQuit : dashboard.cards.totalMembers
     const date = new Date().toISOString().slice(0, 10).replace(/-/g, '')
     const ok = downloadRankingImage({
-      title: `【${scopeLabel}】邀请人数排行榜（招募者 ${rows.length} 名，总人数 ${formatNumber(total)}）`,
+      title: `【${scopeLabel}】邀请人数排行榜（招募者 ${rows.length} 名，总人数 ${formatNumber(memberTotal)}）`,
       filename: `${sanitizeDownloadFilename(`邀请人数排行榜-${selectedScopeFileLabel}-${scopeLabel}-${date}`)}.png`,
       rows
     })

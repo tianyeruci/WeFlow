@@ -1746,17 +1746,21 @@ class InviteStatsService {
     dedupeMembers = false
   ): InviteRankingRow[] {
     const normalizedGroupId = normalizeText(groupId)
-    const scopedEvents = this.getScopedInviteEvents(data, tagId)
-    const filteredEvents = this.filterByTime(scopedEvents, startTime, endTime)
+    const sourceEvents = dedupeMembers
+      ? this.getDashboardInviteEvents(data, tagId, true)
+      : this.getScopedInviteEvents(data, tagId)
+    const filteredEvents = this.filterByTime(sourceEvents, startTime, endTime)
       .filter((event) => (!normalizedGroupId || event.group_id === normalizedGroupId) && this.isRankableInviteEvent(event, dedupeMembers))
-    const effective = dedupeMembers ? this.dedupeInviteEventsByMemberWxId(filteredEvents) : filteredEvents
     const lookup = this.buildInviterMappingLookup(data)
     const buckets = new Map<string, { inviter: string; wxids: Set<string>; users: Set<string>; groups: Set<string>; count: number; recent: number }>()
-    for (const event of effective) {
+    for (const event of filteredEvents) {
       const identity = this.resolveInviterIdentity(event, lookup)
       if (!identity.key) continue
+      const key = dedupeMembers || identity.key.startsWith('person:')
+        ? identity.key
+        : `name:${normalizeIdentityText(identity.name) || identity.key || 'unknown'}`
       const wxid = identity.wxid || this.getInviterWxId(event)
-      const bucket = buckets.get(identity.key) || {
+      const bucket = buckets.get(key) || {
         inviter: identity.name || wxid,
         wxids: new Set<string>(),
         users: new Set<string>(),
@@ -1773,7 +1777,7 @@ class InviteStatsService {
       }
       bucket.groups.add(event.group_id)
       bucket.recent = Math.max(bucket.recent, event.invite_time)
-      buckets.set(identity.key, bucket)
+      buckets.set(key, bucket)
     }
 
     return Array.from(buckets.values())

@@ -1157,6 +1157,7 @@ function InviteStatsPage() {
   }, [dashboard])
 
   const rankingRows = dashboard?.inviteRanking || []
+  const rankingMemberTotal = dashboard?.cards?.totalMembers || 0
   const rankingLabelWidth = useMemo(() => {
     if (!rankingRows.length || typeof document === 'undefined') return 120
     const canvas = document.createElement('canvas')
@@ -1416,7 +1417,7 @@ function InviteStatsPage() {
               <div className="invite-panel-title">
                   <div>
                     <h2>邀请人数排行榜</h2>
-                    <p>【{selectedScopeLabel}】招募者 {rankingRows.length} 名，总人数 {formatNumber(cards?.totalMembers || 0)}</p>
+                    <p>【{selectedScopeLabel}】招募者 {rankingRows.length} 名，总人数 {formatNumber(rankingMemberTotal)}</p>
                   </div>
                 <div className="invite-segment">
                   <button className={chartMode === 'bar' ? 'active' : ''} onClick={() => setChartMode('bar')} title="柱状图">

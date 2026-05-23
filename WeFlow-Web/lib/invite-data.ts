@@ -194,7 +194,7 @@ export async function getMemberTrace(filters: TraceFilters): Promise<MemberTrace
     loadGroupBindings(filters.tagId)
   ])
   const groups = buildGroupsFromBindings(getScopedBindings(groupBindings, filters.tagId))
-  const keyword = (filters.keyword || '').trim().toLowerCase()
+  const keyword = normalizeSearchText(filters.keyword)
 
   const rows = events
     .filter(row => {
@@ -204,7 +204,7 @@ export async function getMemberTrace(filters: TraceFilters): Promise<MemberTrace
 
       if (!isVisibleForTrace(row)) return false
       if (filters.groupId && String(row.group_id || '') !== filters.groupId) return false
-      if (keyword && !memberName(row).toLowerCase().includes(keyword)) return false
+      if (keyword && !normalizeSearchText(memberName(row)).includes(keyword)) return false
       if (!withinRange(traceEventTime, filters.startTime, filters.endTime)) return false
       if (filters.status && traceStatus !== filters.status) return false
       if (filters.attribution && traceAttribution !== filters.attribution) return false
@@ -530,12 +530,15 @@ function buildInviteRanking(events: FinalStatEvent[], mappings: InviterIdentityM
   events.forEach(row => {
     const identity = resolveInviterIdentity(row, lookup)
     if (!identity.key) return
-    const current = ranking.get(identity.key) || { inviterName: identity.name, inviterIds: new Set<string>(), count: 0, groups: new Set<string>(), recent: 0 }
+    const key = identity.key.startsWith('person:')
+      ? identity.key
+      : `name:${normalizeSearchText(identity.name) || identity.key || 'unknown'}`
+    const current = ranking.get(key) || { inviterName: identity.name, inviterIds: new Set<string>(), count: 0, groups: new Set<string>(), recent: 0 }
     current.count += 1
     if (identity.wxid) current.inviterIds.add(identity.wxid)
     current.groups.add(String(row.group_id || ''))
     current.recent = Math.max(current.recent, timeValue(row.invite_time))
-    ranking.set(identity.key, current)
+    ranking.set(key, current)
   })
   return Array.from(ranking.values())
     .map(row => ({
@@ -677,6 +680,14 @@ function memberWxId(row: FinalStatEvent) {
 
 function normalizeIdentity(value: unknown) {
   return String(value || '').trim().toLowerCase()
+}
+
+function normalizeSearchText(value: unknown) {
+  return String(value || '')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase()
 }
 
 function memberName(row: FinalStatEvent) {
