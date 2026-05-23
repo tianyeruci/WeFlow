@@ -3678,6 +3678,13 @@ function registerIpcHandlers() {
     return inviteStatsService.scanActivity(tagId)
   })
 
+  ipcMain.handle('inviteStats:rescanActivity', async (_, tagIdOrPayload: string | { tagId?: string }) => {
+    const tagId = typeof tagIdOrPayload === 'object'
+      ? String(tagIdOrPayload?.tagId || '')
+      : String(tagIdOrPayload || '')
+    return inviteStatsService.rescanActivity(tagId)
+  })
+
   ipcMain.handle('inviteStats:checkQuitGroups', async (_, tagIdOrPayload: string | { tagId?: string }) => {
     const tagId = typeof tagIdOrPayload === 'object'
       ? String(tagIdOrPayload?.tagId || '')

@@ -1093,6 +1093,7 @@ export interface ElectronAPI {
     setGroupTag: (groupId: string, tagId: string) => Promise<InviteStatsResult>
     clearGroupTag: (groupId: string) => Promise<InviteStatsResult>
     scanActivity: (tagId: string) => Promise<{ success: boolean; started?: boolean; skipped?: boolean; running?: boolean; log?: InviteScanLog; error?: string }>
+    rescanActivity: (tagId: string) => Promise<{ success: boolean; started?: boolean; skipped?: boolean; running?: boolean; log?: InviteScanLog; error?: string }>
     checkQuitGroups: (tagId: string) => Promise<{ success: boolean; started?: boolean; skipped?: boolean; running?: boolean; log?: InviteScanLog; error?: string }>
     getScanStatus: () => Promise<InviteStatsResult<{ running: boolean; scanRunning: boolean; quitCheckRunning: boolean; active?: any; scanActive?: any; quitCheckActive?: any; logs: InviteScanLog[] }>>
     getDashboard: (input: {
