@@ -1010,9 +1010,8 @@ function InviteStatsPage() {
     }
     const selectedGroup = rankingGroupId ? rankingGroupOptions.find((group) => group.group_id === rankingGroupId) : undefined
     const scopeLabel = selectedGroup?.group_name || '所有群'
-    const total = rows.reduce((sum, row) => sum + row.count, 0)
     const ok = downloadRankingImage({
-      title: `【${scopeLabel}】邀请人数排行榜（招募者 ${rows.length} 名，入群人数 ${formatNumber(total)}）`,
+      title: `【${scopeLabel}】邀请人数排行榜（招募者 ${rows.length} 名，总人数 ${formatNumber(dashboard?.cards?.totalMembers || 0)}）`,
       filename: `${sanitizeDownloadFilename(`邀请人数排行榜-${selectedScopeFileLabel}-${scopeLabel}-${fileNameDate()}`)}.png`,
       rows
     })
@@ -1157,10 +1156,6 @@ function InviteStatsPage() {
   }, [dashboard])
 
   const rankingRows = dashboard?.inviteRanking || []
-  const rankingInviteTotal = useMemo(
-    () => rankingRows.reduce((sum, row) => sum + Number(row.invite_count || 0), 0),
-    [rankingRows]
-  )
   const rankingLabelWidth = useMemo(() => {
     if (!rankingRows.length || typeof document === 'undefined') return 120
     const canvas = document.createElement('canvas')
@@ -1420,7 +1415,7 @@ function InviteStatsPage() {
               <div className="invite-panel-title">
                   <div>
                     <h2>邀请人数排行榜</h2>
-                    <p>【{selectedScopeLabel}】招募者 {rankingRows.length} 名，入群人数 {formatNumber(rankingInviteTotal)}</p>
+                    <p>【{selectedScopeLabel}】招募者 {rankingRows.length} 名，总人数 {formatNumber(cards?.totalMembers || 0)}</p>
                   </div>
                 <div className="invite-segment">
                   <button className={chartMode === 'bar' ? 'active' : ''} onClick={() => setChartMode('bar')} title="柱状图">
