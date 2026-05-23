@@ -344,7 +344,7 @@ function buildInviteRanking(events: FinalStatEvent[]): InviteRankingRow[] {
   const ranking = new Map<string, { inviterId: string; inviterName: string; count: number; groups: Set<string>; recent: number }>()
   events.forEach(row => {
     const name = inviterName(row)
-    const id = String(row.inviter_wx_id || row.inviter_name || name || 'unknown')
+    const id = normalizeSearchText(name) || String(row.inviter_wx_id || row.inviter_name || 'unknown')
     const current = ranking.get(id) || { inviterId: id, inviterName: name || id, count: 0, groups: new Set<string>(), recent: 0 }
     current.count += 1
     current.groups.add(String(row.group_id || ''))

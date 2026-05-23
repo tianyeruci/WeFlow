@@ -1649,7 +1649,9 @@ class InviteStatsService {
 
     const buckets = new Map<string, { inviter: string; inviter_wx_id: string; users: Set<string>; groups: Set<string>; count: number; recent: number }>()
     for (const event of effective) {
-      const key = event.inviter_wx_id || normalizeIdentityText(event.inviter)
+      const key = dedupeMembers
+        ? event.inviter_wx_id || normalizeIdentityText(event.inviter)
+        : normalizeIdentityText(event.inviter) || event.inviter_wx_id
       if (!key) continue
       const bucket = buckets.get(key) || {
         inviter: event.inviter || event.inviter_wx_id,
