@@ -442,7 +442,7 @@ export default function RemoteViewerPage() {
 
     const selectedGroup = rankingGroupId ? dashboard.groups.find(group => group.id === rankingGroupId) : undefined
     const scopeLabel = selectedGroup?.name || '所有群'
-    const total = rows.reduce((sum, row) => sum + row.count, 0)
+    const total = includeQuitInTotal ? dashboard.cards.totalMembersWithQuit : dashboard.cards.totalMembers
     const date = new Date().toISOString().slice(0, 10).replace(/-/g, '')
     const ok = downloadRankingImage({
       title: `【${scopeLabel}】邀请人数排行榜（招募者 ${rows.length} 名，总人数 ${formatNumber(total)}）`,
@@ -502,7 +502,6 @@ export default function RemoteViewerPage() {
   }
 
   const memberTotal = includeQuitInTotal ? dashboard.cards.totalMembersWithQuit : dashboard.cards.totalMembers
-  const rankingInviteTotal = dashboard.inviteRanking.reduce((sum, row) => sum + Number(row.count || 0), 0)
   const rankingMax = Math.max(...dashboard.inviteRanking.map(row => row.count), 1)
   const groupRankPageCount = Math.max(1, Math.ceil(dashboard.groupRanking.length / GROUP_RANK_PAGE_SIZE))
   const safeGroupRankPage = Math.min(groupRankPage, groupRankPageCount)
@@ -668,7 +667,7 @@ export default function RemoteViewerPage() {
                     <div className="panel-title">
                       <div>
                         <h2>邀请人数排行榜</h2>
-                        <p>【{selectedScopeLabel}】招募者 {dashboard.inviteRanking.length} 名，总人数 {formatNumber(rankingInviteTotal)}</p>
+                        <p>【{selectedScopeLabel}】招募者 {dashboard.inviteRanking.length} 名，总人数 {formatNumber(memberTotal)}</p>
                       </div>
                       <div className="panel-actions">
                         <button className={`icon-btn ${chartMode === 'bar' ? 'active' : ''}`} title="柱状图" onClick={() => setChartMode('bar')}>▥</button>
