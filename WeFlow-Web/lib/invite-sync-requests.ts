@@ -26,6 +26,7 @@ type SyncCounts = Partial<Record<
 const REFRESH_SOURCE_PREFIX = 'web-refresh:'
 const REFRESH_ACCOUNT_SCOPE = process.env.REMOTE_REFRESH_ACCOUNT_SCOPE || 'remote-refresh'
 const REFRESH_COOLDOWN_SECONDS = 15
+const REFRESH_REQUEST_TTL_SECONDS = Math.max(30, Number(process.env.REMOTE_REFRESH_REQUEST_TTL_SECONDS || 120))
 
 export async function createWebRefreshRequest(request: NextRequest) {
   await cleanupOldWebRefreshRequests()
@@ -38,6 +39,16 @@ export async function createWebRefreshRequest(request: NextRequest) {
 
   if (latest) {
     const elapsedSeconds = Math.floor((now.getTime() - new Date(latest.started_at).getTime()) / 1000)
+    if (isFreshRefreshRequest(latest) && (latest.status === 'requested' || latest.status === 'processing')) {
+      return {
+        accepted: true,
+        cooldown: false,
+        requestId: latest.id,
+        remainingSeconds: Math.min(REFRESH_COOLDOWN_SECONDS, secondsUntilRefreshExpiry(latest)),
+        cooldownSeconds: REFRESH_COOLDOWN_SECONDS,
+        alreadyQueued: true
+      }
+    }
     if (elapsedSeconds < REFRESH_COOLDOWN_SECONDS) {
       return {
         accepted: false,
@@ -79,6 +90,7 @@ export async function claimLatestWebRefreshRequest() {
     select: 'id,account_scope,source_client,status,started_at,finished_at,error_text',
     source_client: `like.${REFRESH_SOURCE_PREFIX}%`,
     status: 'eq.requested',
+    started_at: `gte.${refreshRequestCutoffIso()}`,
     order: 'started_at.desc',
     limit: 100
   })
@@ -119,6 +131,7 @@ export async function peekLatestWebRefreshRequest() {
     select: 'id,account_scope,source_client,status,started_at,finished_at,error_text',
     source_client: `like.${REFRESH_SOURCE_PREFIX}%`,
     status: 'eq.requested',
+    started_at: `gte.${refreshRequestCutoffIso()}`,
     order: 'started_at.desc',
     limit: 1
   })
@@ -158,6 +171,17 @@ export async function completeWebRefreshRequest(input: {
 }
 
 export async function cleanupOldWebRefreshRequests() {
+  const now = new Date().toISOString()
+  await supabasePatch('sync_batches', {
+    source_client: `like.${REFRESH_SOURCE_PREFIX}%`,
+    status: 'in.(requested,processing)',
+    started_at: `lt.${refreshRequestCutoffIso()}`
+  }, {
+    status: 'expired',
+    finished_at: now,
+    error_text: 'Expired web refresh request'
+  })
+
   const start = new Date()
   start.setHours(0, 0, 0, 0)
   await supabaseDelete('sync_batches', {
@@ -174,6 +198,21 @@ async function getLatestRefreshForSource(sourceClient: string) {
     limit: 1
   })
   return rows[0]
+}
+
+function refreshRequestCutoffIso() {
+  return new Date(Date.now() - REFRESH_REQUEST_TTL_SECONDS * 1000).toISOString()
+}
+
+function isFreshRefreshRequest(row: Pick<SyncBatchRow, 'started_at'>) {
+  const startedAt = new Date(row.started_at).getTime()
+  return Number.isFinite(startedAt) && Date.now() - startedAt <= REFRESH_REQUEST_TTL_SECONDS * 1000
+}
+
+function secondsUntilRefreshExpiry(row: Pick<SyncBatchRow, 'started_at'>) {
+  const startedAt = new Date(row.started_at).getTime()
+  if (!Number.isFinite(startedAt)) return 1
+  return Math.max(1, Math.ceil((startedAt + REFRESH_REQUEST_TTL_SECONDS * 1000 - Date.now()) / 1000))
 }
 
 function getClientIp(request: NextRequest) {
