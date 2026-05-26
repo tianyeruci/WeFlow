@@ -9,7 +9,11 @@ export function requireSyncToken(request: NextRequest): NextResponse | null {
   return requireToken(request, 'REMOTE_SYNC_TOKEN')
 }
 
-function requireToken(request: NextRequest, envName: 'REMOTE_SYNC_TOKEN') {
+export function requireRemarkToken(request: NextRequest): NextResponse | null {
+  return requireToken(request, 'REMOTE_REMARK_TOKEN')
+}
+
+function requireToken(request: NextRequest, envName: 'REMOTE_SYNC_TOKEN' | 'REMOTE_REMARK_TOKEN') {
   const expectedToken = process.env[envName]
   if (!expectedToken) {
     return NextResponse.json(
