@@ -16,7 +16,14 @@ export async function GET(request: NextRequest) {
       rankingStart: params.get('rankingStart') || undefined,
       rankingEnd: params.get('rankingEnd') || undefined
     })
-    return NextResponse.json({ dashboard })
+    return NextResponse.json(
+      { dashboard },
+      {
+        headers: {
+          'Cache-Control': 's-maxage=10, stale-while-revalidate=60, stale-if-error=300'
+        }
+      }
+    )
   } catch (error) {
     if (error instanceof RemoteDataError) {
       return NextResponse.json({ error: error.message }, { status: error.status })

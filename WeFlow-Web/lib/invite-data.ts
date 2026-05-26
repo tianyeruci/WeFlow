@@ -9,7 +9,7 @@ import {
   TraceStatus
 } from '@/types/invite'
 import { csvText } from './csv'
-import { supabaseSelect, supabaseSelectAll } from './supabase-rest'
+import { supabaseRpc, supabaseSelect, supabaseSelectAll } from './supabase-rest'
 
 type AnyRecord = Record<string, unknown>
 
@@ -124,7 +124,130 @@ export async function listActivityTags(): Promise<ActivityTag[]> {
     .filter(tag => tag.id)
 }
 
+function normalizeDashboardPayload(payload: unknown): DashboardData {
+  const row = rpcRecord(payload)
+  const cards = rpcRecord(row.cards)
+  return {
+    cards: {
+      activeRobots: numericValue(cards.activeRobots, cards.active_robots),
+      monitoredGroups: numericValue(cards.monitoredGroups, cards.monitored_groups),
+      totalMembers: numericValue(cards.totalMembers, cards.total_members),
+      totalMembersWithQuit: numericValue(cards.totalMembersWithQuit, cards.total_members_with_quit),
+      todayNew: numericValue(cards.todayNew, cards.today_new),
+      todayQuit: numericValue(cards.todayQuit, cards.today_quit),
+      pendingCount: numericValue(cards.pendingCount, cards.pending_count)
+    },
+    groups: rpcArray(row.groups).map(toGroupOption),
+    hourlyDistribution: normalizeHourlyDistribution(rpcArray(row.hourlyDistribution ?? row.hourly_distribution)),
+    inviteRanking: rpcArray(row.inviteRanking ?? row.invite_ranking).map(item => {
+      const record = rpcRecord(item)
+      return {
+        inviterId: textValue(record.inviterId, record.inviter_id, record.inviterName, record.inviter_name),
+        inviterName: textValue(record.inviterName, record.inviter_name, UNKNOWN_INVITER_NAME),
+        count: numericValue(record.count)
+      }
+    }),
+    groupRanking: rpcArray(row.groupRanking ?? row.group_ranking).map(item => {
+      const record = rpcRecord(item)
+      return {
+        groupId: textValue(record.groupId, record.group_id),
+        groupName: textValue(record.groupName, record.group_name, '未知群'),
+        count: numericValue(record.count)
+      }
+    }),
+    recentActivities: rpcArray(row.recentActivities ?? row.recent_activities).map(item => {
+      const record = rpcRecord(item)
+      return {
+        eventType: textValue(record.eventType, record.event_type) === 'quit' ? 'quit' : 'invite',
+        memberName: textValue(record.memberName, record.member_name, '未知成员'),
+        avatarUrl: textValue(record.avatarUrl, record.avatar_url),
+        sourceName: textValue(record.sourceName, record.source_name, UNKNOWN_INVITER_NAME),
+        sourceLabel: textValue(record.sourceLabel, record.source_label),
+        groupName: textValue(record.groupName, record.group_name, '未知群'),
+        time: nullableText(record.time)
+      }
+    })
+  }
+}
+
+function normalizeMemberTracePayload(payload: unknown): MemberTraceData {
+  const row = rpcRecord(payload)
+  const limit = numericValue(row.limit)
+  const offset = numericValue(row.offset)
+  const total = numericValue(row.total)
+  return {
+    rows: rpcArray(row.rows).map(item => {
+      const record = rpcRecord(item)
+      const status = textValue(record.status)
+      const attribution = textValue(record.attribution)
+      return {
+        id: textValue(record.id),
+        memberName: textValue(record.memberName, record.member_name, '未知成员'),
+        avatarUrl: textValue(record.avatarUrl, record.avatar_url),
+        wxid: textValue(record.wxid),
+        source: textValue(record.source),
+        groupId: textValue(record.groupId, record.group_id),
+        groupName: textValue(record.groupName, record.group_name, '未知群'),
+        time: nullableText(record.time),
+        status: status === 'quit' || status === 'pending' ? status : 'active',
+        attribution: attribution === 'invalid' || attribution === 'pending' || attribution === 'none' ? attribution : 'valid',
+        rawContent: textValue(record.rawContent, record.raw_content)
+      }
+    }),
+    total,
+    groups: rpcArray(row.groups).map(toGroupOption),
+    limit: limit || undefined,
+    offset: limit > 0 ? offset : undefined,
+    hasMore: Boolean(row.hasMore ?? row.has_more ?? (limit > 0 && offset + limit < total))
+  }
+}
+
+function normalizeHourlyDistribution(rows: unknown[]) {
+  const counts = new Map(rows.map(item => {
+    const record = rpcRecord(item)
+    return [numericValue(record.hour), numericValue(record.count)] as const
+  }))
+  return Array.from({ length: 24 }, (_, hour) => ({ hour, count: counts.get(hour) || 0 }))
+}
+
+function toGroupOption(item: unknown): GroupOption {
+  const record = rpcRecord(item)
+  return {
+    id: textValue(record.id, record.groupId, record.group_id),
+    name: textValue(record.name, record.groupName, record.group_name, '未知群'),
+    avatarUrl: textValue(record.avatarUrl, record.avatar_url)
+  }
+}
+
+function rpcRecord(payload: unknown): AnyRecord {
+  if (Array.isArray(payload)) return rpcRecord(payload[0])
+  if (payload && typeof payload === 'object') return payload as AnyRecord
+  return {}
+}
+
+function rpcArray(payload: unknown): unknown[] {
+  return Array.isArray(payload) ? payload : []
+}
+
+function nullableText(value: unknown) {
+  const text = textValue(value)
+  return text || null
+}
+
+function numericValue(...values: unknown[]) {
+  return normalizeCount(numberValue(...values))
+}
+
 export async function getDashboard(filters: DashboardFilters): Promise<DashboardData> {
+  return normalizeDashboardPayload(await supabaseRpc<unknown>('weflow_invite_dashboard', {
+    p_tag_id: filters.tagId || ALL_ACTIVITY_TAG_ID,
+    p_ranking_group_id: filters.rankingGroupId || null,
+    p_ranking_start: filters.rankingStart || null,
+    p_ranking_end: filters.rankingEnd || null
+  }))
+}
+
+async function getDashboardFromLegacyRest(filters: DashboardFilters): Promise<DashboardData> {
   const [events, groupBindings] = await Promise.all([
     loadFinalEvents(filters.tagId),
     loadGroupBindings(filters.tagId)
@@ -189,6 +312,21 @@ export async function getDashboard(filters: DashboardFilters): Promise<Dashboard
 }
 
 export async function getMemberTrace(filters: TraceFilters): Promise<MemberTraceData> {
+  return normalizeMemberTracePayload(await supabaseRpc<unknown>('weflow_invite_member_trace', {
+    p_tag_id: filters.tagId || ALL_ACTIVITY_TAG_ID,
+    p_group_id: filters.groupId || null,
+    p_keyword: filters.keyword || null,
+    p_start_time: filters.startTime || null,
+    p_end_time: filters.endTime || null,
+    p_status: filters.status || null,
+    p_attribution: filters.attribution || null,
+    p_include_quit: filters.includeQuit !== false,
+    p_limit: Math.max(0, Math.floor(Number(filters.limit || 0))),
+    p_offset: Math.max(0, Math.floor(Number(filters.offset || 0)))
+  }))
+}
+
+async function getMemberTraceFromLegacyRest(filters: TraceFilters): Promise<MemberTraceData> {
   const [events, groupBindings] = await Promise.all([
     loadFinalEvents({ tagId: filters.tagId, groupId: filters.groupId }),
     loadGroupBindings(filters.tagId)
@@ -277,35 +415,41 @@ export async function getGroupListExportRows(filters: GroupReleaseFilters) {
 }
 
 export async function getGroupMemberExportRows(filters: GroupMemberExportFilters) {
-  const events = await loadFinalEvents(filters.tagId)
-  return buildGroupMemberCsvRows(events, filters.groupId)
+  const trace = await getMemberTrace({
+    tagId: filters.tagId,
+    groupId: filters.groupId,
+    includeQuit: filters.includeQuit !== false,
+    limit: 0
+  })
+  return trace.rows.map(row => [
+    formatDateTime(row.time),
+    sourceNameFromTrace(row.source),
+    row.memberName,
+    groupMemberStatusTextFromTrace(row.source)
+  ])
 }
 
 export async function getBatchGroupMemberExportFiles(filters: GroupReleaseFilters) {
-  const [events, groupBindings] = await Promise.all([
-    loadFinalEvents(filters.tagId),
-    loadGroupBindings(filters.tagId)
-  ])
-  const groups = buildGroupsFromBindings(groupBindings)
-  const groupedEvents = new Map<string, FinalStatEvent[]>()
+  const dashboard = await getDashboard({ tagId: filters.tagId })
+  const groups = dashboard.groups
+  const files: GroupExportFile[] = []
 
-  events
-    .filter(isConfirmedStatEvent)
-    .forEach(row => {
-      const groupId = String(row.group_id || row.group_name || '')
-      if (!groupId) return
-      const current = groupedEvents.get(groupId) || []
-      current.push(row)
-      groupedEvents.set(groupId, current)
+  for (const group of groups) {
+    const rows = await getGroupMemberExportRows({
+      tagId: filters.tagId,
+      groupId: group.id,
+      includeQuit: filters.includeQuit
     })
-
-  return groups.map(group => ({
-    filename: `${sanitizeFilename(group.name)}.csv`,
-    content: csvText(
+    files.push({
+      filename: `${sanitizeFilename(group.name)}.csv`,
+      content: csvText(
       ['时间', '邀请人', '被邀请人', '状态'],
-      buildGroupMemberCsvRows(groupedEvents.get(group.id) || [], group.id)
-    )
-  }))
+        rows
+      )
+    })
+  }
+
+  return files
 }
 
 async function loadFinalEvents(input?: string | EventLoadFilters) {
@@ -329,22 +473,8 @@ async function loadFinalStatEvents(filters: EventLoadFilters = {}) {
 }
 
 async function loadCompatibilityEvents(filters: EventLoadFilters = {}) {
-  const query: Record<string, string | number> = {
-    select: '*',
-    order: 'id.asc'
-  }
-  if (filters.tagId && filters.tagId !== ALL_ACTIVITY_TAG_ID) query.activity_tag_id = `eq.${filters.tagId}`
-  if (filters.groupId) query.group_id = `eq.${filters.groupId}`
-
-  const [inviteRows, quitRows] = await Promise.all([
-    supabaseSelectAll<AnyRecord>('invite_events', query),
-    supabaseSelectAll<AnyRecord>('quit_events', query)
-  ])
-
-  return [
-    ...inviteRows.map(normalizeInviteEventRow),
-    ...quitRows.map(normalizeQuitEventRow)
-  ]
+  void filters
+  return []
 }
 
 function normalizeInviteEventRow(row: AnyRecord): FinalStatEvent {
@@ -937,6 +1067,19 @@ function buildGroupMemberCsvRows(events: FinalStatEvent[], groupId: string) {
 function groupMemberSourceName(row: FinalStatEvent) {
   if (isQuitEvent(row)) return operatorName(row)
   return inviterName(row)
+}
+
+function sourceNameFromTrace(source: string) {
+  const parts = String(source || '').split(' · ')
+  return parts.length > 1 ? parts.slice(1).join(' · ') : String(source || '')
+}
+
+function groupMemberStatusTextFromTrace(source: string) {
+  const type = String(source || '').split(' · ')[0]
+  if (type === '扫码') return '扫码入群'
+  if (type === '直接入群') return '直接入群'
+  if (type === '主动退群' || type === '被移出' || type === '退群') return type
+  return '邀请入群'
 }
 
 function groupMemberStatusText(row: FinalStatEvent) {

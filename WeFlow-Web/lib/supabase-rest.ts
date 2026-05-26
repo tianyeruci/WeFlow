@@ -19,6 +19,10 @@ export async function supabaseSelect<T>(table: string, query: Record<string, Que
   return requestSupabase<T[]>('GET', table, query)
 }
 
+export async function supabaseRpc<T>(functionName: string, params: Record<string, QueryValue> = {}) {
+  return requestSupabase<T>('POST', `rpc/${functionName}`, {}, params)
+}
+
 export async function supabaseSelectAll<T>(
   table: string,
   query: Record<string, QueryValue> = {},

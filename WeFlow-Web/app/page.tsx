@@ -5,7 +5,8 @@ import type { ActivityTag, DashboardData, MemberTraceData, MemberTraceRow } from
 
 type ViewKey = 'dashboard' | 'groups' | 'trace'
 type ChartMode = 'bar' | 'pie'
-const DASHBOARD_POLL_INTERVAL_MS = 10000
+const DASHBOARD_POLL_INTERVAL_MS = 60000
+const DASHBOARD_POLL_ERROR_INTERVAL_MS = 120000
 const REFRESH_COOLDOWN_SECONDS = 15
 const GROUP_RANK_PAGE_SIZE = 10
 const TRACE_PAGE_SIZE = 200
@@ -230,6 +231,7 @@ export default function RemoteViewerPage() {
   const [isRequestingLatestData, setIsRequestingLatestData] = useState(false)
   const [refreshCooldownRemaining, setRefreshCooldownRemaining] = useState(0)
   const [groupRankPage, setGroupRankPage] = useState(1)
+  const [dashboardPollDelayMs, setDashboardPollDelayMs] = useState(DASHBOARD_POLL_INTERVAL_MS)
   const traceRequestSeq = useRef(0)
 
   const selectedTag = useMemo(
@@ -289,10 +291,12 @@ export default function RemoteViewerPage() {
       const payload = await apiGet<{ dashboard: DashboardData }>(`/api/invite/dashboard?${params}`)
       setDashboard(payload.dashboard)
       setError('')
+      setDashboardPollDelayMs(DASHBOARD_POLL_INTERVAL_MS)
     } catch (err) {
       if (!silent) {
         setDashboard(emptyDashboard)
       }
+      setDashboardPollDelayMs(DASHBOARD_POLL_ERROR_INTERVAL_MS)
       setError(errorMessage(err))
     } finally {
       if (!silent) {
@@ -343,10 +347,10 @@ export default function RemoteViewerPage() {
 
     const timer = window.setInterval(() => {
       void loadDashboard({ silent: true })
-    }, DASHBOARD_POLL_INTERVAL_MS)
+    }, dashboardPollDelayMs)
 
     return () => window.clearInterval(timer)
-  }, [loadDashboard, selectedTagId, view])
+  }, [dashboardPollDelayMs, loadDashboard, selectedTagId, view])
 
   useEffect(() => {
     if (view === 'trace') void loadTrace()
@@ -399,8 +403,7 @@ export default function RemoteViewerPage() {
       }
 
       setRefreshCooldownRemaining(Number(payload.cooldownSeconds || REFRESH_COOLDOWN_SECONDS))
-      showNotice('已通知本地同步，页面会自动刷新最新数据')
-      void loadDashboard({ silent: true })
+      showNotice('已通知本地同步，页面会在下一轮自动读取最新数据')
     } catch (err) {
       setError(errorMessage(err))
     } finally {

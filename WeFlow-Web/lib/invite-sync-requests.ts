@@ -1,6 +1,6 @@
 import { createHash } from 'crypto'
 import { NextRequest } from 'next/server'
-import { supabaseDelete, supabaseInsert, supabasePatch, supabaseSelect } from './supabase-rest'
+import { supabaseInsert, supabasePatch, supabaseSelect } from './supabase-rest'
 
 type SyncBatchRow = {
   id: number
@@ -27,6 +27,8 @@ const REFRESH_SOURCE_PREFIX = 'web-refresh:'
 const REFRESH_ACCOUNT_SCOPE = process.env.REMOTE_REFRESH_ACCOUNT_SCOPE || 'remote-refresh'
 const REFRESH_COOLDOWN_SECONDS = 15
 const REFRESH_REQUEST_TTL_SECONDS = Math.max(30, Number(process.env.REMOTE_REFRESH_REQUEST_TTL_SECONDS || 120))
+const REFRESH_CLEANUP_INTERVAL_MS = Math.max(60_000, Number(process.env.REMOTE_REFRESH_CLEANUP_INTERVAL_MS || 5 * 60_000))
+let lastRefreshCleanupAt = 0
 
 export async function createWebRefreshRequest(request: NextRequest) {
   await cleanupOldWebRefreshRequests()
@@ -171,6 +173,10 @@ export async function completeWebRefreshRequest(input: {
 }
 
 export async function cleanupOldWebRefreshRequests() {
+  const current = Date.now()
+  if (current - lastRefreshCleanupAt < REFRESH_CLEANUP_INTERVAL_MS) return
+  lastRefreshCleanupAt = current
+
   const now = new Date().toISOString()
   await supabasePatch('sync_batches', {
     source_client: `like.${REFRESH_SOURCE_PREFIX}%`,
@@ -180,13 +186,6 @@ export async function cleanupOldWebRefreshRequests() {
     status: 'expired',
     finished_at: now,
     error_text: 'Expired web refresh request'
-  })
-
-  const start = new Date()
-  start.setHours(0, 0, 0, 0)
-  await supabaseDelete('sync_batches', {
-    source_client: `like.${REFRESH_SOURCE_PREFIX}%`,
-    started_at: `lt.${start.toISOString()}`
   })
 }
 

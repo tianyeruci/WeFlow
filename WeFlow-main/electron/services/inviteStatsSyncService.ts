@@ -279,7 +279,7 @@ class InviteStatsSyncService {
       }
 
       await inviteStatsService.ensureBackgroundScanComplete(this.remoteRefreshScanWaitMs)
-      const result = await this.queueSync({ endpoint, token, full: true })
+      const result = await this.queueSync({ endpoint, token })
       await this.completeRemoteRefreshRequest(endpoint, token, requestId, result)
     } catch (error) {
       console.warn('[InviteStatsSync] Remote refresh polling error:', error)
