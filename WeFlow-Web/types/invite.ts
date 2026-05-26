@@ -6,7 +6,9 @@ export type ActivityTag = {
 export type GroupOption = {
   id: string
   name: string
+  accountScope?: string
   avatarUrl?: string
+  remark?: string
 }
 
 export type InviteRankingRow = {

@@ -28,9 +28,10 @@ export async function GET(request: NextRequest) {
 
     if (mode === 'list') {
       const rows = await getGroupListExportRows({
-        tagId: params.get('tagId') || undefined
+        tagId: params.get('tagId') || undefined,
+        sort: toGroupSort(params.get('sort'))
       })
-      return csvResponse('发售群列表.csv', ['群名称', '群ID', '人数'], rows)
+      return csvResponse('发售群列表.csv', ['群名称', '群ID', '群备注', '人数'], rows)
     }
 
     if (mode === 'member') {
@@ -64,6 +65,11 @@ export async function GET(request: NextRequest) {
     const message = error instanceof RemoteDataError ? error.message : 'Failed to export groups'
     return Response.json({ error: message }, { status: error instanceof RemoteDataError ? error.status : 500 })
   }
+}
+
+function toGroupSort(value: string | null) {
+  if (value === 'count_asc' || value === 'count_desc') return value
+  return undefined
 }
 
 function sanitizeFilename(value: string) {

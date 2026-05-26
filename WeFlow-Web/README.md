@@ -5,7 +5,7 @@
 ## 功能范围
 
 - 数据大屏：活动标签筛选、核心指标、进群时段、邀请排行榜、群人数、实时动态、排行榜导出。邀请排行榜默认不去重，按群成员邀请溯源中的邀请记录逐条计数。
-- 发售群列表：活动标签筛选、群数量和人数摘要、包含已退群的人开关、群列表、单群导出、批量 ZIP 导出、汇总导出。
+- 发售群列表：活动标签筛选、群数量和人数摘要、包含已退群的人开关、群列表、Web 运营备注、人数排序、单群导出、批量 ZIP 导出、汇总导出。
 - 群成员溯源：活动标签、群、成员昵称、时间段、状态、归因、含退群筛选、原始消息查看、溯源导出。
 - 不包含：待确认记录、活动标签管理、增量扫描、全局扫描、人工修复。
 
@@ -17,15 +17,17 @@ Vercel 生产环境需要配置：
 SUPABASE_URL=https://dmbgthvxmnozitczusxj.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 REMOTE_SYNC_TOKEN=change-this-sync-token
+REMOTE_REMARK_TOKEN=change-this-remark-token
 ```
 
-浏览器端不会拿到 `SUPABASE_SERVICE_ROLE_KEY`。普通用户只读页面不再需要访问口令；任何知道页面地址的人都可以查看远程统计结果。`REMOTE_SYNC_TOKEN` 只给本地同步程序使用，不要给普通用户。
+浏览器端不会拿到 `SUPABASE_SERVICE_ROLE_KEY`。普通用户只读页面不再需要访问口令；任何知道页面地址的人都可以查看远程统计结果。`REMOTE_SYNC_TOKEN` 只给本地同步程序使用，不要给普通用户。`REMOTE_REMARK_TOKEN` 只用于发售群列表的运营备注写入，首次保存备注时在页面输入，不影响普通查看和导出。
 
 ## Supabase 数据要求
 
-当前 V1 读取两类对象：
+当前 V1 读取以下对象：
 
 - `activity_tags`：活动标签表，建议字段包含 `id`、`tag_name`、`enabled`。
+- `web_group_remarks`：WeFlow-Web 运营备注表，按 `account_scope + group_id` 保存页面维护的群备注；建表、索引和权限脚本见 `supabase/web_group_remarks_2026_05_26.sql`。
 - `final_stat_events`：最终统计视图或等价表，页面和导出统一读取该视图。
 
 `final_stat_events` 建议字段：

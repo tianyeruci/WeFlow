@@ -9,7 +9,7 @@ import {
   TraceStatus
 } from '@/types/invite'
 import { csvText } from './csv'
-import { supabaseSelect, supabaseSelectAll } from './supabase-rest'
+import { supabaseSelect, supabaseSelectAll, supabaseUpsert } from './supabase-rest'
 
 type AnyRecord = Record<string, unknown>
 
@@ -58,6 +58,13 @@ type GroupTagBinding = {
   raw_json?: unknown
 }
 
+type WebGroupRemark = {
+  account_scope?: string
+  group_id?: string
+  remark?: string | null
+  updated_at?: string | null
+}
+
 type InviterIdentityMapping = {
   id?: string
   account_scope?: string
@@ -94,11 +101,14 @@ type TraceFilters = {
 type GroupReleaseFilters = {
   tagId?: string
   includeQuit?: boolean
+  sort?: GroupSortOrder
 }
 
 type GroupMemberExportFilters = GroupReleaseFilters & {
   groupId: string
 }
+
+type GroupSortOrder = 'count_asc' | 'count_desc'
 
 type GroupExportFile = {
   filename: string
@@ -130,10 +140,13 @@ export async function getDashboard(filters: DashboardFilters): Promise<Dashboard
     loadGroupBindings(filters.tagId)
   ])
   const scopedBindings = getScopedBindings(groupBindings, filters.tagId)
-  const inviterMappings = await loadInviterIdentityMappings(scopedBindings)
+  const [inviterMappings, groupRemarks] = await Promise.all([
+    loadInviterIdentityMappings(scopedBindings),
+    loadGroupRemarks(scopedBindings)
+  ])
   const scopedInviteEvents = getScopedInviteEvents(events, groupBindings, filters.tagId)
   const scopedQuitEvents = getScopedQuitEvents(events, groupBindings, filters.tagId)
-  const groups = buildGroupsFromBindings(scopedBindings)
+  const groups = buildGroupsFromBindings(scopedBindings, groupRemarks)
   const rankingEvents = scopedInviteEvents.filter(row => {
     if (!isRankableInviteEvent(row, false)) return false
     if (filters.rankingGroupId && String(row.group_id || '') !== filters.rankingGroupId) return false
@@ -269,11 +282,39 @@ export async function getGroupListExportRows(filters: GroupReleaseFilters) {
   const dashboard = await getDashboard({ tagId: filters.tagId })
   const counts = new Map(dashboard.groupRanking.map(row => [row.groupId, row.count]))
 
-  return dashboard.groups.map(group => [
+  const rows = dashboard.groups.map(group => [
     group.name,
     group.id,
+    group.remark || '',
     counts.get(group.id) || 0
   ])
+  if (filters.sort === 'count_asc') {
+    rows.sort((a, b) => Number(a[3] || 0) - Number(b[3] || 0) || String(a[0]).localeCompare(String(b[0]), 'zh-CN'))
+  } else if (filters.sort === 'count_desc') {
+    rows.sort((a, b) => Number(b[3] || 0) - Number(a[3] || 0) || String(a[0]).localeCompare(String(b[0]), 'zh-CN'))
+  }
+  return rows
+}
+
+export async function saveGroupRemark(input: { accountScope: string; groupId: string; remark: string }) {
+  const accountScope = String(input.accountScope || '').trim()
+  const groupId = String(input.groupId || '').trim()
+  const remark = String(input.remark || '').trim().slice(0, 300)
+  const updatedAt = new Date().toISOString()
+
+  await supabaseUpsert('web_group_remarks', [{
+    account_scope: accountScope,
+    group_id: groupId,
+    remark,
+    updated_at: updatedAt
+  }], { onConflict: ['account_scope', 'group_id'] })
+
+  return {
+    accountScope,
+    groupId,
+    remark,
+    updatedAt
+  }
 }
 
 export async function getGroupMemberExportRows(filters: GroupMemberExportFilters) {
@@ -463,6 +504,35 @@ async function loadInviterIdentityMappings(bindings: GroupTagBinding[]) {
   return rows.filter(row => row.enabled !== false && allowed.has(String(row.account_scope || '').trim()))
 }
 
+async function loadGroupRemarks(bindings: GroupTagBinding[]) {
+  const accountScopes = Array.from(new Set(bindings.map(row => String(row.account_scope || '').trim()).filter(Boolean)))
+  const groupIds = new Set(bindings.map(row => String(row.group_id || row.group_name || '').trim()).filter(Boolean))
+  const remarks = new Map<string, string>()
+  if (bindings.length === 0 || accountScopes.length === 0 || groupIds.size === 0) return remarks
+
+  const query: Record<string, string | number> = {
+    select: 'account_scope,group_id,remark,updated_at',
+    order: 'updated_at.desc'
+  }
+  if (accountScopes.length === 1) query.account_scope = `eq.${accountScopes[0]}`
+
+  const rows = await supabaseSelectAll<WebGroupRemark>('web_group_remarks', query).catch(error => {
+    console.warn('[InviteData] Failed to load web group remarks:', error)
+    return [] as WebGroupRemark[]
+  })
+  const allowedScopes = new Set(accountScopes)
+
+  rows.forEach(row => {
+    const accountScope = String(row.account_scope || '').trim()
+    const groupId = String(row.group_id || '').trim()
+    if (!allowedScopes.has(accountScope) || !groupIds.has(groupId)) return
+    const key = groupRemarkKey(accountScope, groupId)
+    if (!remarks.has(key)) remarks.set(key, String(row.remark || ''))
+  })
+
+  return remarks
+}
+
 export async function listInviterIdentityMappings(accountScope?: string) {
   const query: Record<string, string | number> = {
     select: 'id,account_scope,person_key,person_name,wxid,display_name,enabled,created_at,updated_at,raw_json',
@@ -500,7 +570,7 @@ function buildGroupsFromEvents(events: FinalStatEvent[]): GroupOption[] {
   return Array.from(groups.values()).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
 }
 
-function buildGroupsFromBindings(bindings: GroupTagBinding[]): GroupOption[] {
+function buildGroupsFromBindings(bindings: GroupTagBinding[], remarks: Map<string, string> = new Map()): GroupOption[] {
   const groups = new Map<string, GroupTagBinding>()
   bindings.forEach(row => {
     const id = String(row.group_id || row.group_name || '')
@@ -511,8 +581,22 @@ function buildGroupsFromBindings(bindings: GroupTagBinding[]): GroupOption[] {
     }
   })
   return Array.from(groups.values())
-    .map(row => ({ id: String(row.group_id || row.group_name || ''), name: bindingGroupName(row), avatarUrl: groupAvatarUrl(row) }))
+    .map(row => {
+      const id = String(row.group_id || row.group_name || '')
+      const accountScope = String(row.account_scope || '')
+      return {
+        id,
+        name: bindingGroupName(row),
+        accountScope,
+        avatarUrl: groupAvatarUrl(row),
+        remark: remarks.get(groupRemarkKey(accountScope, id)) || ''
+      }
+    })
     .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
+}
+
+function groupRemarkKey(accountScope: string, groupId: string) {
+  return `${accountScope}\u0000${groupId}`
 }
 
 function buildHourlyDistribution(events: FinalStatEvent[]) {
