@@ -8,7 +8,6 @@ import {
   TraceAttribution,
   TraceStatus
 } from '@/types/invite'
-import { csvText } from './csv'
 import { supabaseSelect, supabaseSelectAll, supabaseUpsert } from './supabase-rest'
 
 type AnyRecord = Record<string, unknown>
@@ -110,9 +109,17 @@ type GroupMemberExportFilters = GroupReleaseFilters & {
 
 type GroupSortOrder = 'count_asc' | 'count_desc'
 
+export type GroupMemberExportRow = {
+  time: string
+  inviterName: string
+  avatarUrl: string
+  memberName: string
+  status: string
+}
+
 type GroupExportFile = {
   filename: string
-  content: string
+  rows: GroupMemberExportRow[]
 }
 
 type EventLoadFilters = {
@@ -317,12 +324,12 @@ export async function saveGroupRemark(input: { accountScope: string; groupId: st
   }
 }
 
-export async function getGroupMemberExportRows(filters: GroupMemberExportFilters) {
+export async function getGroupMemberExportRows(filters: GroupMemberExportFilters): Promise<GroupMemberExportRow[]> {
   const events = await loadFinalEvents(filters.tagId)
-  return buildGroupMemberCsvRows(events, filters.groupId)
+  return buildGroupMemberExportRows(events, filters.groupId)
 }
 
-export async function getBatchGroupMemberExportFiles(filters: GroupReleaseFilters) {
+export async function getBatchGroupMemberExportFiles(filters: GroupReleaseFilters): Promise<GroupExportFile[]> {
   const [events, groupBindings] = await Promise.all([
     loadFinalEvents(filters.tagId),
     loadGroupBindings(filters.tagId)
@@ -341,11 +348,8 @@ export async function getBatchGroupMemberExportFiles(filters: GroupReleaseFilter
     })
 
   return groups.map(group => ({
-    filename: `${sanitizeFilename(group.name)}.csv`,
-    content: csvText(
-      ['时间', '邀请人', '被邀请人', '状态'],
-      buildGroupMemberCsvRows(groupedEvents.get(group.id) || [], group.id)
-    )
+    filename: `${sanitizeFilename(group.name)}.xlsx`,
+    rows: buildGroupMemberExportRows(groupedEvents.get(group.id) || [], group.id)
   }))
 }
 
@@ -1005,17 +1009,18 @@ function attributionText(attribution: TraceAttribution) {
   return '有效'
 }
 
-function buildGroupMemberCsvRows(events: FinalStatEvent[], groupId: string) {
+function buildGroupMemberExportRows(events: FinalStatEvent[], groupId: string): GroupMemberExportRow[] {
   return events
     .filter(row => String(row.group_id || row.group_name || '') === groupId)
     .filter(isConfirmedStatEvent)
     .sort((a, b) => timeValue(b.invite_time || b.exit_time || b.created_time) - timeValue(a.invite_time || a.exit_time || a.created_time))
-    .map(row => [
-      formatDateTime(row.invite_time || row.exit_time || row.created_time),
-      groupMemberSourceName(row),
-      memberName(row),
-      groupMemberStatusText(row)
-    ])
+    .map(row => ({
+      time: formatDateTime(row.invite_time || row.exit_time || row.created_time),
+      inviterName: groupMemberSourceName(row),
+      avatarUrl: memberAvatarUrl(row),
+      memberName: memberName(row),
+      status: groupMemberStatusText(row)
+    }))
 }
 
 function groupMemberSourceName(row: FinalStatEvent) {
