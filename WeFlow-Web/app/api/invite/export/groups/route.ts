@@ -7,6 +7,7 @@ import {
   getGroupMemberExportRows,
   getGroupSummaryExportRows
 } from '@/lib/invite-data'
+import { buildGroupMemberXlsx, xlsxResponse } from '@/lib/xlsx'
 import { buildZipArchive } from '@/lib/zip'
 import { RemoteDataError } from '@/lib/supabase-rest'
 
@@ -44,14 +45,22 @@ export async function GET(request: NextRequest) {
         groupId
       })
       const groupName = sanitizeFilename(params.get('groupName') || groupId)
-      return csvResponse(`${groupName}.csv`, ['时间', '邀请人', '被邀请人', '状态'], rows)
+      const workbook = await buildGroupMemberXlsx(rows)
+      return xlsxResponse(`${groupName}.xlsx`, workbook)
     }
 
     if (mode === 'batch') {
       const files = await getBatchGroupMemberExportFiles({
         tagId: params.get('tagId') || undefined
       })
-      const archive = buildZipArchive(files)
+      const archiveFiles = []
+      for (const file of files) {
+        archiveFiles.push({
+          filename: file.filename,
+          content: await buildGroupMemberXlsx(file.rows)
+        })
+      }
+      const archive = buildZipArchive(archiveFiles)
       return new Response(archive, {
         headers: {
           'Content-Type': 'application/zip',

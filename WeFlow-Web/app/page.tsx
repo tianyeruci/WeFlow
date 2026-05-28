@@ -499,7 +499,7 @@ export default function RemoteViewerPage() {
     } else if (mode === 'member' && group) {
       params.set('groupId', group.groupId)
       params.set('groupName', group.groupName)
-      filename = `${sanitizeDownloadFilename(group.groupName)}.csv`
+      filename = `${sanitizeDownloadFilename(group.groupName)}.xlsx`
       actionKey = `groups:member:${group.groupId}`
     }
 

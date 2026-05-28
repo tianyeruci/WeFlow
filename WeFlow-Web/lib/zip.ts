@@ -5,15 +5,19 @@ export type ZipFileEntry = {
   content: string | Uint8Array
 }
 
+type ZipArchiveOptions = {
+  preservePaths?: boolean
+}
+
 const crcTable = buildCrcTable()
 
-export function buildZipArchive(files: ZipFileEntry[]) {
+export function buildZipArchive(files: ZipFileEntry[], options: ZipArchiveOptions = {}) {
   const localParts: Buffer[] = []
   const centralParts: Buffer[] = []
   let offset = 0
 
   files.forEach(file => {
-    const filename = normalizeZipFilename(file.filename)
+    const filename = normalizeZipFilename(file.filename, options.preservePaths === true)
     const nameBytes = Buffer.from(filename, 'utf8')
     const contentBytes = typeof file.content === 'string'
       ? Buffer.from(file.content, 'utf8')
@@ -73,11 +77,27 @@ export function buildZipArchive(files: ZipFileEntry[]) {
   return Buffer.concat([...localParts, centralDirectory, endRecord])
 }
 
-function normalizeZipFilename(value: string) {
-  return value
+function normalizeZipFilename(value: string, preservePaths: boolean) {
+  if (!preservePaths) return normalizeZipSegment(value) || 'download'
+
+  const filename = value
+    .replace(/\\/g, '/')
+    .split('/')
+    .map(normalizeZipSegment)
+    .filter(Boolean)
+    .join('/')
+
+  return filename || 'download'
+}
+
+function normalizeZipSegment(value: string) {
+  const segment = value
     .replace(/[\\/:*?"<>|]+/g, '-')
     .replace(/[\u0000-\u001f]/g, '')
-    .trim() || 'download'
+    .trim()
+
+  if (segment === '.' || segment === '..') return ''
+  return segment
 }
 
 function crc32(buffer: Uint8Array) {
