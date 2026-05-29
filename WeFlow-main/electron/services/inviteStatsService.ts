@@ -3509,7 +3509,7 @@ class InviteStatsService {
       const data = this.getScope()
       if (this.recomputeFlags(data)) this.persist()
       const rows = this.buildMemberTraceRows(data, payload)
-      const headers = ['事件类型', '活动标签', '成员昵称', '成员 wxid', '邀请者', '邀请者 wxid', '所在群', '群 ID', '时间', '状态', '是否有效', '类型']
+      const headers = ['事件类型', '活动标签', '成员昵称', '成员 wxid', '邀请者', '邀请者 wxid', '所在群', '群 ID', '时间', '状态', '是否有效', '类型', '原始消息']
       const body = rows.map((row) => [
         row.event_type === 'invite' ? '入群' : '退群',
         row.activity_tag_name,
@@ -3522,7 +3522,8 @@ class InviteStatsService {
         this.formatTime(row.event_time),
         row.status === 'pending' ? '待确认' : (row.status !== 'ignored' && (row.event_type === 'quit' || row.delete_flag === 1) ? '已退出群' : '未退出群'),
         row.status === 'ignored' ? '无效' : row.status !== 'confirmed' ? '待确认' : row.event_type !== 'invite' ? '-' : row.valid_flag === 1 ? '有效' : row.valid_flag === -1 ? '无效' : '-',
-        row.join_type || row.quit_type
+        row.join_type || row.quit_type,
+        row.raw_content
       ])
       const format = this.normalizeExportFormat(payload.filePath, payload.format)
       if (format === 'csv') this.writeCsv(payload.filePath, headers, body)

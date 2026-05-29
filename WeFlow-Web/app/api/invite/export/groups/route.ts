@@ -7,6 +7,7 @@ import {
   getGroupMemberExportRows,
   getGroupSummaryExportRows
 } from '@/lib/invite-data'
+import { buildGroupMemberXlsx, xlsxResponse } from '@/lib/xlsx'
 import { buildZipArchive } from '@/lib/zip'
 import { RemoteDataError } from '@/lib/supabase-rest'
 
@@ -28,9 +29,10 @@ export async function GET(request: NextRequest) {
 
     if (mode === 'list') {
       const rows = await getGroupListExportRows({
-        tagId: params.get('tagId') || undefined
+        tagId: params.get('tagId') || undefined,
+        sort: toGroupSort(params.get('sort'))
       })
-      return csvResponse('发售群列表.csv', ['群名称', '群ID', '人数'], rows)
+      return csvResponse('发售群列表.csv', ['群名称', '群ID', '群备注', '人数'], rows)
     }
 
     if (mode === 'member') {
@@ -43,14 +45,22 @@ export async function GET(request: NextRequest) {
         groupId
       })
       const groupName = sanitizeFilename(params.get('groupName') || groupId)
-      return csvResponse(`${groupName}.csv`, ['时间', '邀请人', '被邀请人', '状态'], rows)
+      const workbook = await buildGroupMemberXlsx(rows)
+      return xlsxResponse(`${groupName}.xlsx`, workbook)
     }
 
     if (mode === 'batch') {
       const files = await getBatchGroupMemberExportFiles({
         tagId: params.get('tagId') || undefined
       })
-      const archive = buildZipArchive(files)
+      const archiveFiles = []
+      for (const file of files) {
+        archiveFiles.push({
+          filename: file.filename,
+          content: await buildGroupMemberXlsx(file.rows)
+        })
+      }
+      const archive = buildZipArchive(archiveFiles)
       return new Response(archive, {
         headers: {
           'Content-Type': 'application/zip',
@@ -64,6 +74,11 @@ export async function GET(request: NextRequest) {
     const message = error instanceof RemoteDataError ? error.message : 'Failed to export groups'
     return Response.json({ error: message }, { status: error instanceof RemoteDataError ? error.status : 500 })
   }
+}
+
+function toGroupSort(value: string | null) {
+  if (value === 'count_asc' || value === 'count_desc') return value
+  return undefined
 }
 
 function sanitizeFilename(value: string) {

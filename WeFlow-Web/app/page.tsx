@@ -5,10 +5,13 @@ import type { ActivityTag, DashboardData, MemberTraceData, MemberTraceRow } from
 
 type ViewKey = 'dashboard' | 'groups' | 'trace'
 type ChartMode = 'bar' | 'pie'
+type GroupSortMode = '' | 'count_desc' | 'count_asc'
 const DASHBOARD_POLL_INTERVAL_MS = 10000
 const REFRESH_COOLDOWN_SECONDS = 15
 const GROUP_RANK_PAGE_SIZE = 10
 const TRACE_PAGE_SIZE = 200
+const GROUP_REMARK_MAX_LENGTH = 300
+const REMARK_TOKEN_STORAGE_KEY = 'weflow-web-remark-token'
 const rankingImageColors = ['#59b8ad', '#e3c763', '#e75a6c', '#ffd8b4', '#5b9bea', '#87cba2', '#f28a42', '#586aa5', '#bf7bd7']
 
 function downloadRankingImage(input: {
@@ -230,7 +233,12 @@ export default function RemoteViewerPage() {
   const [isRequestingLatestData, setIsRequestingLatestData] = useState(false)
   const [refreshCooldownRemaining, setRefreshCooldownRemaining] = useState(0)
   const [groupRankPage, setGroupRankPage] = useState(1)
+  const [groupSort, setGroupSort] = useState<GroupSortMode>('')
+  const [groupRemarkDrafts, setGroupRemarkDrafts] = useState<Record<string, string>>({})
+  const [savingRemarkKey, setSavingRemarkKey] = useState('')
   const traceRequestSeq = useRef(0)
+  const editingRemarkKeyRef = useRef('')
+  const canceledRemarkKeyRef = useRef('')
 
   const selectedTag = useMemo(
     () => selectedTagId === ALL_ACTIVITY_TAG_ID ? undefined : tags.find(tag => tag.id === selectedTagId),
@@ -370,6 +378,26 @@ export default function RemoteViewerPage() {
     setTracePage(0)
   }, [selectedTagId, traceAttribution, traceEnd, traceGroupId, traceKeyword, traceStart, traceStatus])
 
+  useEffect(() => {
+    setGroupRemarkDrafts(current => {
+      const next = { ...current }
+      const validKeys = new Set<string>()
+      dashboard.groups.forEach(group => {
+        const key = groupRemarkKey(group.accountScope || '', group.id)
+        validKeys.add(key)
+        if (editingRemarkKeyRef.current !== key) {
+          next[key] = group.remark || ''
+        } else if (!(key in next)) {
+          next[key] = group.remark || ''
+        }
+      })
+      Object.keys(next).forEach(key => {
+        if (!validKeys.has(key)) delete next[key]
+      })
+      return next
+    })
+  }, [dashboard.groups])
+
   async function requestLatestData() {
     if (isRequestingLatestData || refreshCooldownRemaining > 0) return
 
@@ -464,16 +492,83 @@ export default function RemoteViewerPage() {
     if (mode === 'summary') {
       params.set('includeQuit', String(includeQuitInTotal))
       filename = '发售群人数汇总.csv'
+    } else if (mode === 'list') {
+      if (groupSort) params.set('sort', groupSort)
     } else if (mode === 'batch') {
       filename = '发售群员批量.zip'
     } else if (mode === 'member' && group) {
       params.set('groupId', group.groupId)
       params.set('groupName', group.groupName)
-      filename = `${sanitizeDownloadFilename(group.groupName)}.csv`
+      filename = `${sanitizeDownloadFilename(group.groupName)}.xlsx`
       actionKey = `groups:member:${group.groupId}`
     }
 
     await downloadExport('/api/invite/export/groups', params, filename, actionKey)
+  }
+
+  async function saveGroupRemark(row: {
+    accountScope: string
+    groupId: string
+    groupName: string
+    remark: string
+    remarkKey: string
+  }) {
+    const remark = String(groupRemarkDrafts[row.remarkKey] ?? '').trim()
+    if (remark === String(row.remark || '').trim()) return
+    if (!row.accountScope || !row.groupId) {
+      setError('当前群缺少账号作用域或群 ID，无法保存备注')
+      return
+    }
+
+    const token = getRemarkToken()
+    if (!token) {
+      showNotice('已取消保存群备注')
+      setGroupRemarkDrafts(current => ({ ...current, [row.remarkKey]: row.remark || '' }))
+      return
+    }
+
+    setSavingRemarkKey(row.remarkKey)
+    setError('')
+    try {
+      const response = await fetch('/api/invite/group-remarks', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          accountScope: row.accountScope,
+          groupId: row.groupId,
+          remark
+        })
+      })
+      const payload = await response.json().catch(() => ({})) as {
+        remark?: { accountScope?: string; groupId?: string; remark?: string }
+        error?: string
+      }
+      if (!response.ok) {
+        if (response.status === 401) {
+          window.localStorage.removeItem(REMARK_TOKEN_STORAGE_KEY)
+          throw new Error('群备注写入口令不正确，请重新输入')
+        }
+        throw new Error(payload.error || '群备注保存失败')
+      }
+
+      const savedRemark = payload.remark?.remark ?? remark
+      setDashboard(current => ({
+        ...current,
+        groups: current.groups.map(group => {
+          if (group.id !== row.groupId || String(group.accountScope || '') !== row.accountScope) return group
+          return { ...group, remark: savedRemark }
+        })
+      }))
+      setGroupRemarkDrafts(current => ({ ...current, [row.remarkKey]: savedRemark }))
+      showNotice('群备注已保存')
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setSavingRemarkKey('')
+    }
   }
 
   async function downloadExport(endpoint: string, params: URLSearchParams, filename: string, actionKey: string) {
@@ -516,14 +611,22 @@ export default function RemoteViewerPage() {
   const chartPoints = buildLinePoints(dashboard.hourlyDistribution)
   const groupRows = useMemo(() => {
     const counts = new Map(dashboard.groupRanking.map(row => [row.groupId, row.count]))
-    return dashboard.groups.map((group, index) => ({
-      index: index + 1,
+    const rows = dashboard.groups.map(group => ({
       groupId: group.id,
       groupName: group.name,
+      accountScope: group.accountScope || '',
       avatarUrl: group.avatarUrl,
+      remark: group.remark || '',
+      remarkKey: groupRemarkKey(group.accountScope || '', group.id),
       count: counts.get(group.id) || 0
     }))
-  }, [dashboard.groupRanking, dashboard.groups])
+    if (groupSort === 'count_asc') {
+      rows.sort((a, b) => a.count - b.count || a.groupName.localeCompare(b.groupName, 'zh-CN'))
+    } else if (groupSort === 'count_desc') {
+      rows.sort((a, b) => b.count - a.count || a.groupName.localeCompare(b.groupName, 'zh-CN'))
+    }
+    return rows.map((row, index) => ({ ...row, index: index + 1 }))
+  }, [dashboard.groupRanking, dashboard.groups, groupSort])
 
   useEffect(() => {
     if (groupRankPage > groupRankPageCount) {
@@ -553,6 +656,10 @@ export default function RemoteViewerPage() {
   function showNotice(message: string) {
     setNotice(message)
     window.setTimeout(() => setNotice(''), 2400)
+  }
+
+  function toggleGroupSort() {
+    setGroupSort(current => current === 'count_desc' ? 'count_asc' : 'count_desc')
   }
 
   return (
@@ -783,7 +890,17 @@ export default function RemoteViewerPage() {
                         <tr>
                           <th>序号</th>
                           <th>群名称</th>
-                          <th>人数</th>
+                          <th>备注</th>
+                          <th>
+                            <button
+                              type="button"
+                              className={`sort-btn ${groupSort ? 'active' : ''}`}
+                              title="按人数排序"
+                              onClick={toggleGroupSort}
+                            >
+                              人数 <span>{groupSort === 'count_asc' ? '↑' : groupSort === 'count_desc' ? '↓' : '↕'}</span>
+                            </button>
+                          </th>
                           <th>操作</th>
                         </tr>
                       </thead>
@@ -800,6 +917,46 @@ export default function RemoteViewerPage() {
                                   <span className="member-name">{row.groupName}</span>
                                   <span className="wxid">{row.groupId}</span>
                                 </div>
+                              </div>
+                            </td>
+                            <td>
+                              <div className="remark-cell">
+                                <input
+                                  value={groupRemarkDrafts[row.remarkKey] ?? row.remark}
+                                  maxLength={GROUP_REMARK_MAX_LENGTH}
+                                  placeholder="添加运营备注"
+                                  aria-label={`${row.groupName} 群备注`}
+                                  disabled={savingRemarkKey === row.remarkKey}
+                                  onFocus={() => {
+                                    editingRemarkKeyRef.current = row.remarkKey
+                                  }}
+                                  onChange={event => {
+                                    const value = event.target.value.slice(0, GROUP_REMARK_MAX_LENGTH)
+                                    setGroupRemarkDrafts(current => ({ ...current, [row.remarkKey]: value }))
+                                  }}
+                                  onBlur={() => {
+                                    if (canceledRemarkKeyRef.current === row.remarkKey) {
+                                      canceledRemarkKeyRef.current = ''
+                                      editingRemarkKeyRef.current = ''
+                                      setGroupRemarkDrafts(current => ({ ...current, [row.remarkKey]: row.remark || '' }))
+                                      return
+                                    }
+                                    editingRemarkKeyRef.current = ''
+                                    void saveGroupRemark(row)
+                                  }}
+                                  onKeyDown={event => {
+                                    if (event.key === 'Enter') {
+                                      event.preventDefault()
+                                      event.currentTarget.blur()
+                                    }
+                                    if (event.key === 'Escape') {
+                                      event.preventDefault()
+                                      canceledRemarkKeyRef.current = row.remarkKey
+                                      event.currentTarget.blur()
+                                    }
+                                  }}
+                                />
+                                {savingRemarkKey === row.remarkKey && <span>保存中</span>}
                               </div>
                             </td>
                             <td>{formatNumber(row.count)}</td>
@@ -1056,4 +1213,19 @@ function sanitizeDownloadFilename(value: string) {
     .replace(/[\\/:*?"<>|]+/g, '-')
     .replace(/[\u0000-\u001f]/g, '')
     .trim() || 'download'
+}
+
+function getRemarkToken() {
+  const stored = window.localStorage.getItem(REMARK_TOKEN_STORAGE_KEY)?.trim()
+  if (stored) return stored
+  const input = window.prompt('请输入群备注写入口令')
+  const token = String(input || '').trim()
+  if (token) {
+    window.localStorage.setItem(REMARK_TOKEN_STORAGE_KEY, token)
+  }
+  return token
+}
+
+function groupRemarkKey(accountScope: string, groupId: string) {
+  return `${accountScope}\u0000${groupId}`
 }

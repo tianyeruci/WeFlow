@@ -626,7 +626,8 @@ textarea:focus {
 }
 
 .groups-action:disabled,
-.row-export:disabled {
+.row-export:disabled,
+.remark-cell input:disabled {
   opacity: 0.72;
   cursor: not-allowed;
   filter: grayscale(0.15);
@@ -637,18 +638,22 @@ textarea:focus {
 }
 
 .groups-table-wrap table {
-  min-width: 760px;
+  min-width: 980px;
 }
 
 .groups-table-wrap td:nth-child(1) {
-  width: 86px;
+  width: 76px;
 }
 
 .groups-table-wrap td:nth-child(3) {
-  width: 120px;
+  width: 320px;
 }
 
 .groups-table-wrap td:nth-child(4) {
+  width: 120px;
+}
+
+.groups-table-wrap td:nth-child(5) {
   width: 136px;
 }
 
@@ -668,6 +673,58 @@ textarea:focus {
 
 .group-cell > div:last-child {
   min-width: 0;
+}
+
+.remark-cell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.remark-cell input {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 10px;
+  border-color: #dfe6f2;
+  background: #fbfdff;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.remark-cell input::placeholder {
+  color: #9aa6b8;
+  font-weight: 800;
+}
+
+.remark-cell span {
+  color: #6d7890;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.sort-btn {
+  min-width: 82px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid #dfe6f2;
+  background: #fff;
+  color: #566176;
+  font-size: 12px;
+  font-weight: 950;
+}
+
+.sort-btn span {
+  width: 12px;
+  text-align: center;
+}
+
+.sort-btn.active {
+  border-color: #bcd2f7;
+  background: #edf4ff;
+  color: #2454ad;
 }
 
 .row-export {
@@ -1533,6 +1590,37 @@ tr:last-child td {
 
   td:nth-child(7)::before {
     content: "原始消息";
+  }
+
+  .groups-table-wrap td:nth-child(1)::before {
+    content: "序号";
+  }
+
+  .groups-table-wrap td:nth-child(2)::before {
+    content: "群名称";
+  }
+
+  .groups-table-wrap td:nth-child(3)::before {
+    content: "备注";
+  }
+
+  .groups-table-wrap td:nth-child(4)::before {
+    content: "人数";
+  }
+
+  .groups-table-wrap td:nth-child(5)::before {
+    content: "操作";
+  }
+
+  .groups-table-wrap td:nth-child(1),
+  .groups-table-wrap td:nth-child(3),
+  .groups-table-wrap td:nth-child(4),
+  .groups-table-wrap td:nth-child(5) {
+    width: auto;
+  }
+
+  .remark-cell {
+    grid-template-columns: 1fr;
   }
 
   .raw-cell {
